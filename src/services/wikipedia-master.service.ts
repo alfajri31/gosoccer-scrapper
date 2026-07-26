@@ -41,8 +41,6 @@ interface ScrapedPlayer {
   name: string;
   position?: string;
   nationality?: string;
-  imageUrl?: string;
-  mobileImageUrl?: string;
   sourceUrl?: string;
 }
 
@@ -115,38 +113,8 @@ function wikipediaUrlForName(name: string): string {
   )}`;
 }
 
-function wikimediaImageUrl(
-  sourceUrl: string | undefined,
-  width: number,
-): string | undefined {
-  if (!sourceUrl) {
-    return undefined;
-  }
-
-  try {
-    const url = new URL(sourceUrl);
-
-    if (
-      url.hostname !== 'upload.wikimedia.org' ||
-      !url.pathname.includes('/thumb/')
-    ) {
-      return sourceUrl;
-    }
-
-    const parts = url.pathname.split('/');
-    const filename = parts.at(-1);
-
-    if (!filename) {
-      return sourceUrl;
-    }
-
-    parts[parts.length - 1] = filename.replace(/^\d+px-/, `${width}px-`);
-    url.pathname = parts.join('/');
-
-    return url.toString();
-  } catch {
-    return sourceUrl;
-  }
+function originalImageUrl(sourceUrl: string | undefined): string | undefined {
+  return sourceUrl;
 }
 
 async function scrapeWikipediaImage(
@@ -172,8 +140,8 @@ async function scrapeWikipediaImage(
   });
 
   return {
-    imageUrl: wikimediaImageUrl(sourceImageUrl, 800),
-    mobileImageUrl: wikimediaImageUrl(sourceImageUrl, 320),
+    imageUrl: originalImageUrl(sourceImageUrl),
+    mobileImageUrl: originalImageUrl(sourceImageUrl),
   };
 }
 
@@ -215,6 +183,15 @@ async function configurePage(page: Page): Promise<void> {
   await page.setUserAgent('SoccerScrapper/1.0 (educational master-data sync)');
   await page.setExtraHTTPHeaders({
     'Accept-Language': 'en-US,en;q=0.9',
+  });
+  await page.setRequestInterception(true);
+  page.on('request', (request) => {
+    if (['image', 'font', 'media'].includes(request.resourceType())) {
+      void request.abort();
+      return;
+    }
+
+    void request.continue();
   });
 }
 
@@ -280,8 +257,8 @@ async function scrapeCountries(page: Page): Promise<ScrapedCountry[]> {
     countries.set(externalId, {
       externalId,
       name: row.name,
-      imageUrl: wikimediaImageUrl(row.imageUrl, 800),
-      mobileImageUrl: wikimediaImageUrl(row.imageUrl, 320),
+      imageUrl: originalImageUrl(row.imageUrl),
+      mobileImageUrl: originalImageUrl(row.imageUrl),
       sourceUrl: row.href,
     });
   }
@@ -489,8 +466,8 @@ async function scrapeTeams(
 
   return {
     teams: Array.from(teams.values()),
-    imageUrl: wikimediaImageUrl(result.imageUrl, 800),
-    mobileImageUrl: wikimediaImageUrl(result.imageUrl, 320),
+    imageUrl: originalImageUrl(result.imageUrl),
+    mobileImageUrl: originalImageUrl(result.imageUrl),
   };
 }
 
@@ -518,7 +495,12 @@ async function scrapeCurrentSquad(
       document.querySelectorAll<HTMLElement>('[id]'),
     ).find((element) => {
       const id = element.id.toLowerCase().replace(/[_-]+/g, ' ');
-      return id === 'current squad' || id === 'first team squad';
+      return (
+        id === 'current squad' ||
+        id === 'first team squad' ||
+        id === 'current roster' ||
+        id === 'first team roster'
+      );
     });
     const heading = currentSquadMarker?.closest<HTMLElement>(
       'h2, h3, h4, h5, h6',
@@ -678,8 +660,8 @@ async function scrapeCurrentSquad(
 
   return {
     players: Array.from(players.values()),
-    imageUrl: wikimediaImageUrl(result.imageUrl, 800),
-    mobileImageUrl: wikimediaImageUrl(result.imageUrl, 320),
+    imageUrl: originalImageUrl(result.imageUrl),
+    mobileImageUrl: originalImageUrl(result.imageUrl),
   };
 }
 
@@ -719,25 +701,6 @@ export async function syncPlayers(
   try {
     const teamPage = await scrapeCurrentSquad(page, team);
 
-    for (const player of teamPage.players) {
-      if (!player.sourceUrl) {
-        continue;
-      }
-
-      try {
-        const playerImage = await scrapeWikipediaImage(page, player.sourceUrl);
-        player.imageUrl = playerImage.imageUrl;
-        player.mobileImageUrl = playerImage.mobileImageUrl;
-      } catch (error) {
-        console.error(
-          `[player-image] Failed to synchronize ${player.name}:`,
-          error instanceof Error ? error.message : error,
-        );
-      }
-
-      await new Promise((resolve) => setTimeout(resolve, 200));
-    }
-
     if (teamPage.players.length > 0) {
       await PlayerModel.bulkWrite(
         teamPage.players.map((player) => ({
@@ -750,8 +713,8 @@ export async function syncPlayers(
                 name: player.name,
                 position: player.position,
                 nationality: player.nationality,
-                imageUrl: player.imageUrl ?? null,
-                mobileImageUrl: player.mobileImageUrl ?? null,
+                imageUrl: null,
+                mobileImageUrl: null,
                 team: teamId,
                 sourceUrl: player.sourceUrl,
                 scrapedAt: new Date(),
