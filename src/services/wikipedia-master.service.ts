@@ -3,10 +3,12 @@ import type { Browser, Page } from 'puppeteer' with {
 };
 import type { Types } from 'mongoose';
 
+import { CoachModel } from '../models/coach';
 import { CountryModel } from '../models/country';
 import { LeagueModel } from '../models/league';
 import { PlayerModel } from '../models/player';
 import { TeamModel } from '../models/team';
+import { YearModel } from '../models/year';
 
 const COUNTRY_LIST_URL =
   'https://en.wikipedia.org/wiki/List_of_sovereign_states';
@@ -44,6 +46,12 @@ interface ScrapedPlayer {
   sourceUrl?: string;
 }
 
+interface ScrapedCoach {
+  externalId: string;
+  name: string;
+  sourceUrl?: string;
+}
+
 interface ScrapedTeamPage {
   players: ScrapedPlayer[];
   imageUrl?: string;
@@ -60,11 +68,14 @@ export interface WikipediaSyncState {
   status: 'idle' | 'running' | 'completed' | 'failed';
   phase:
     | 'idle'
+    | 'years'
     | 'countries'
     | 'leagues'
     | 'teams'
+    | 'coaches'
     | 'players'
     | 'completed';
+  yearsSaved: number;
   countriesSaved: number;
   leaguesDiscovered: number;
   leaguesSaved: number;
@@ -73,6 +84,8 @@ export interface WikipediaSyncState {
   teamsSaved: number;
   teamsProcessed: number;
   teamPagesFailed: number;
+  coachesSaved: number;
+  coachPagesFailed: number;
   playersSaved: number;
   startedAt?: string;
   finishedAt?: string;
@@ -88,6 +101,7 @@ function createIdleState(): WikipediaSyncState {
   return {
     status: 'idle',
     phase: 'idle',
+    yearsSaved: 0,
     countriesSaved: 0,
     leaguesDiscovered: 0,
     leaguesSaved: 0,
@@ -96,6 +110,8 @@ function createIdleState(): WikipediaSyncState {
     teamsSaved: 0,
     teamsProcessed: 0,
     teamPagesFailed: 0,
+    coachesSaved: 0,
+    coachPagesFailed: 0,
     playersSaved: 0,
   };
 }
@@ -424,17 +440,34 @@ async function scrapeTeams(
         const cells = Array.from(
           row.querySelectorAll<HTMLElement>(':scope > th, :scope > td'),
         );
-
-        if (cells.length !== headers.length) {
-          return null;
-        }
-
-        const anchor = cells[teamColumnIndex]?.querySelector<HTMLAnchorElement>(
-          'a[href*="wikipedia.org/wiki/"]:not(.image)',
+        const indexedTeamCell = cells[teamColumnIndex];
+        const scopedTeamCell = row.querySelector<HTMLElement>(
+          ':scope > th[scope="row"]',
+        );
+        const linkedTeamCell = cells.find((cell) =>
+          Boolean(
+            cell.querySelector<HTMLAnchorElement>(
+              'a[href]:not(.image):not(.new)',
+            ),
+          ),
+        );
+        const teamCell =
+          scopedTeamCell ??
+          (cells.length === headers.length &&
+          indexedTeamCell?.querySelector('a[href]:not(.image):not(.new)')
+            ? indexedTeamCell
+            : undefined) ??
+          linkedTeamCell;
+        const anchor = teamCell?.querySelector<HTMLAnchorElement>(
+          'a[href]:not(.image):not(.new)',
         );
         const name = anchor?.textContent?.trim();
 
-        if (!anchor || !name || anchor.classList.contains('new')) {
+        if (
+          !anchor ||
+          !name ||
+          !new URL(anchor.href).pathname.startsWith('/wiki/')
+        ) {
           return null;
         }
 
@@ -665,6 +698,96 @@ async function scrapeCurrentSquad(
   };
 }
 
+async function scrapeCoach(
+  page: Page,
+  team: ScrapedTeam,
+): Promise<ScrapedCoach | undefined> {
+  await page.goto(team.sourceUrl, {
+    waitUntil: 'domcontentloaded',
+    timeout: 30000,
+  });
+
+  const result = await page.evaluate(() => {
+    const normalize = (value: string | null): string =>
+      (value ?? '').replace(/\[[^\]]+\]/g, '').replace(/\s+/g, ' ').trim();
+    const rows = Array.from(
+      document.querySelectorAll<HTMLTableRowElement>('table.infobox tr'),
+    );
+    const coachRow = rows.find((row) => {
+      const label = normalize(
+        row.querySelector<HTMLElement>(':scope > th')?.textContent ?? '',
+      ).toLowerCase();
+
+      return (
+        label === 'head coach' ||
+        label === 'manager' ||
+        label === 'coach'
+      );
+    });
+    const valueCell = coachRow?.querySelector<HTMLElement>(':scope > td');
+    const anchors = Array.from(
+      valueCell?.querySelectorAll<HTMLAnchorElement>(
+        'a[href]:not(.image):not(.new)',
+      ) ?? [],
+    );
+    const coachAnchor = anchors.find(
+      (anchor) =>
+        new URL(anchor.href).pathname.startsWith('/wiki/') &&
+        normalize(anchor.textContent).length > 0,
+    );
+    const name = normalize(
+      coachAnchor?.textContent ?? valueCell?.textContent ?? '',
+    );
+
+    if (!name) {
+      return undefined;
+    }
+
+    return {
+      name,
+      href: coachAnchor?.href,
+    };
+  });
+
+  if (!result) {
+    return undefined;
+  }
+
+  return {
+    externalId: result.href
+      ? wikipediaExternalId(result.href, team.sourceUrl)
+      : `wikipedia:${team.externalId}:coach:${result.name
+          .toLowerCase()
+          .replace(/[^a-z0-9]+/g, '-')}`,
+    name: result.name,
+    sourceUrl: result.href,
+  };
+}
+
+export async function syncYears(): Promise<void> {
+  syncState.phase = 'years';
+  const years = Array.from({ length: 27 }, (_, index) => 2000 + index);
+
+  await YearModel.bulkWrite(
+    years.map((year) => ({
+      updateOne: {
+        filter: {
+          year,
+        },
+        update: {
+          $set: {
+            externalId: `year:${year}`,
+            name: String(year),
+            year,
+          },
+        },
+        upsert: true,
+      },
+    })),
+  );
+  syncState.yearsSaved = years.length;
+}
+
 export async function syncCountries(page: Page): Promise<void> {
   syncState.phase = 'countries';
   const countries = await scrapeCountries(page);
@@ -688,6 +811,50 @@ export async function syncCountries(page: Page): Promise<void> {
       },
     );
     syncState.countriesSaved += 1;
+  }
+}
+
+export async function syncCoach(
+  page: Page,
+  team: ScrapedTeam,
+  teamId: Types.ObjectId,
+): Promise<void> {
+  syncState.phase = 'coaches';
+
+  try {
+    const coach = await scrapeCoach(page, team);
+
+    if (!coach) {
+      console.log(`[coach] ${team.name}: coach not available`);
+      return;
+    }
+
+    await CoachModel.updateOne(
+      {
+        externalId: coach.externalId,
+      },
+      {
+        $set: {
+          name: coach.name,
+          imageUrl: null,
+          mobileImageUrl: null,
+          team: teamId,
+          sourceUrl: coach.sourceUrl,
+          scrapedAt: new Date(),
+        },
+      },
+      {
+        upsert: true,
+      },
+    );
+    syncState.coachesSaved += 1;
+    console.log(`[coach] ${team.name}: ${coach.name} saved`);
+  } catch (error) {
+    syncState.coachPagesFailed += 1;
+    console.error(
+      `[coach] Failed to synchronize ${team.name}:`,
+      error instanceof Error ? error.message : error,
+    );
   }
 }
 
@@ -841,6 +1008,7 @@ export async function syncTeams(
 
       if (teamDocument) {
         await syncTeamImage(page, team, teamDocument._id);
+        await syncCoach(page, team, teamDocument._id);
         await syncPlayers(page, team, teamDocument._id);
       }
 
@@ -921,6 +1089,7 @@ async function runWikipediaMasterSync(): Promise<void> {
     const page = await browser.newPage();
     await configurePage(page);
 
+    await syncYears();
     await syncCountries(page);
     await syncLeagues(page);
 
@@ -945,7 +1114,7 @@ export function getOrStartWikipediaMasterSync(): WikipediaSyncState {
     syncState = {
       ...createIdleState(),
       status: 'running',
-      phase: 'countries',
+      phase: 'years',
       startedAt: new Date().toISOString(),
     };
     activeSync = runWikipediaMasterSync().finally(() => {
