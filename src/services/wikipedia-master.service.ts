@@ -3,10 +3,12 @@ import type { Browser, Page } from 'puppeteer' with {
 };
 import type { Types } from 'mongoose';
 
+import { ClassementModel } from '../models/classement';
 import { CoachModel } from '../models/coach';
 import { CountryModel } from '../models/country';
 import { LeagueModel } from '../models/league';
 import { PlayerModel } from '../models/player';
+import { StadiumModel } from '../models/stadium';
 import { TeamModel } from '../models/team';
 import { YearModel } from '../models/year';
 
@@ -52,6 +54,33 @@ interface ScrapedCoach {
   sourceUrl?: string;
 }
 
+interface ScrapedStadium {
+  externalId: string;
+  name: string;
+  capacity?: number;
+  sourceUrl?: string;
+}
+
+interface ScrapedClassementRow {
+  position: number;
+  teamName: string;
+  teamUrl: string | undefined;
+  played: number;
+  won: number;
+  drawn: number;
+  lost: number;
+  goalsFor: number;
+  goalsAgainst: number;
+  goalDifference: number;
+  points: number;
+}
+
+interface ScrapedClassementPage {
+  seasonUrl: string;
+  seasonYear: number;
+  rows: ScrapedClassementRow[];
+}
+
 interface ScrapedTeamPage {
   players: ScrapedPlayer[];
   imageUrl?: string;
@@ -72,8 +101,10 @@ export interface WikipediaSyncState {
     | 'countries'
     | 'leagues'
     | 'teams'
+    | 'stadiums'
     | 'coaches'
     | 'players'
+    | 'classements'
     | 'completed';
   yearsSaved: number;
   countriesSaved: number;
@@ -84,9 +115,14 @@ export interface WikipediaSyncState {
   teamsSaved: number;
   teamsProcessed: number;
   teamPagesFailed: number;
+  stadiumsSaved: number;
+  stadiumPagesFailed: number;
   coachesSaved: number;
   coachPagesFailed: number;
   playersSaved: number;
+  classementsSaved: number;
+  classementPagesFailed: number;
+  classementTeamsMissing: number;
   startedAt?: string;
   finishedAt?: string;
   error?: string;
@@ -110,9 +146,14 @@ function createIdleState(): WikipediaSyncState {
     teamsSaved: 0,
     teamsProcessed: 0,
     teamPagesFailed: 0,
+    stadiumsSaved: 0,
+    stadiumPagesFailed: 0,
     coachesSaved: 0,
     coachPagesFailed: 0,
     playersSaved: 0,
+    classementsSaved: 0,
+    classementPagesFailed: 0,
+    classementTeamsMissing: 0,
   };
 }
 
@@ -328,7 +369,7 @@ async function scrapeTopLeagues(page: Page): Promise<ScrapedLeague[]> {
         const normalizedText = text.toLowerCase();
 
         if (
-          !/(1st[\s-]*tier|first[\s-]*tier|top[\s-]*tier|national pro league)/i.test(
+          !/(1st[\s-]*(tier|level)|first[\s-]*(tier|level)|top[\s-]*tier|national pro league)/i.test(
             text,
           ) ||
           normalizedText.includes('women') ||
@@ -404,11 +445,14 @@ async function scrapeTeams(
       const hasTeam = headers.some(
         (header) => header === 'team' || header === 'club',
       );
-      const hasMasterAttribute = headers.some((header) =>
+      const hasLocationAttribute = headers.some((header) =>
         /(location|stadium|ground|founded)/.test(header),
       );
+      const hasCurrentSeasonAttribute =
+        headers.some((header) => header.includes('position')) &&
+        headers.some((header) => header.includes('first season'));
 
-      return hasTeam && hasMasterAttribute;
+      return hasTeam && (hasLocationAttribute || hasCurrentSeasonAttribute);
     });
 
     const imageUrl =
@@ -764,6 +808,262 @@ async function scrapeCoach(
   };
 }
 
+async function scrapeStadium(
+  page: Page,
+  team: ScrapedTeam,
+): Promise<ScrapedStadium | undefined> {
+  await page.goto(team.sourceUrl, {
+    waitUntil: 'domcontentloaded',
+    timeout: 30000,
+  });
+
+  const result = await page.evaluate(() => {
+    const normalize = (value: string | null): string =>
+      (value ?? '').replace(/\[[^\]]+\]/g, '').replace(/\s+/g, ' ').trim();
+    const rows = Array.from(
+      document.querySelectorAll<HTMLTableRowElement>('table.infobox tr'),
+    );
+    const stadiumRow = rows.find((row) => {
+      const label = normalize(
+        row.querySelector<HTMLElement>(':scope > th')?.textContent ?? '',
+      ).toLowerCase();
+
+      return (
+        label === 'ground' ||
+        label === 'stadium' ||
+        label === 'home ground' ||
+        label === 'home venue'
+      );
+    });
+    const capacityRow = rows.find((row) => {
+      const label = normalize(
+        row.querySelector<HTMLElement>(':scope > th')?.textContent ?? '',
+      ).toLowerCase();
+
+      return label === 'capacity';
+    });
+    const valueCell = stadiumRow?.querySelector<HTMLElement>(':scope > td');
+    const stadiumAnchor = Array.from(
+      valueCell?.querySelectorAll<HTMLAnchorElement>(
+        'a[href]:not(.image):not(.new)',
+      ) ?? [],
+    ).find(
+      (anchor) =>
+        new URL(anchor.href).pathname.startsWith('/wiki/') &&
+        normalize(anchor.textContent).length > 0,
+    );
+    const name = normalize(
+      stadiumAnchor?.textContent ?? valueCell?.textContent ?? '',
+    );
+    const capacityText = normalize(
+      capacityRow?.querySelector<HTMLElement>(':scope > td')?.textContent ?? '',
+    );
+    const capacityMatch = capacityText.replace(/,/g, '').match(/\d+/);
+
+    if (!name) {
+      return undefined;
+    }
+
+    return {
+      name,
+      href: stadiumAnchor?.href,
+      capacity: capacityMatch
+        ? Number.parseInt(capacityMatch[0], 10)
+        : undefined,
+    };
+  });
+
+  if (!result) {
+    return undefined;
+  }
+
+  return {
+    externalId: result.href
+      ? wikipediaExternalId(result.href, team.sourceUrl)
+      : `wikipedia:${team.externalId}:stadium:${result.name
+          .toLowerCase()
+          .replace(/[^a-z0-9]+/g, '-')}`,
+    name: result.name,
+    capacity: result.capacity,
+    sourceUrl: result.href,
+  };
+}
+
+async function scrapeClassement(
+  page: Page,
+  league: { name: string; sourceUrl: string },
+): Promise<ScrapedClassementPage> {
+  await page.goto(league.sourceUrl, {
+    waitUntil: 'domcontentloaded',
+    timeout: 30000,
+  });
+
+  const seasonUrl = await page.evaluate(() => {
+    const normalize = (value: string | null): string =>
+      (value ?? '').replace(/\[[^\]]+\]/g, '').replace(/\s+/g, ' ').trim();
+    const infoboxRows = Array.from(
+      document.querySelectorAll<HTMLTableRowElement>('table.infobox tr'),
+    );
+    const currentSeasonRow = infoboxRows.find((row) => {
+      const label = normalize(
+        row.querySelector<HTMLElement>(':scope > th')?.textContent ?? '',
+      ).toLowerCase();
+
+      return label === 'current season' || label === 'current';
+    });
+    const currentSeasonAnchor =
+      currentSeasonRow?.querySelector<HTMLAnchorElement>(
+        'a[href]:not(.new)',
+      );
+
+    if (currentSeasonAnchor) {
+      return currentSeasonAnchor.href;
+    }
+
+    const seasonAnchor = Array.from(
+      document.querySelectorAll<HTMLAnchorElement>(
+        'table.infobox a[href]:not(.new)',
+      ),
+    ).find((anchor) =>
+      /20\d{2}\s*[–-]\s*(?:\d{2}|20\d{2})/.test(
+        normalize(anchor.textContent),
+      ),
+    );
+
+    return seasonAnchor?.href ?? window.location.href;
+  });
+
+  if (seasonUrl !== page.url()) {
+    await page.goto(seasonUrl, {
+      waitUntil: 'domcontentloaded',
+      timeout: 30000,
+    });
+  }
+
+  const result = await page.evaluate(() => {
+    const normalize = (value: string | null): string =>
+      (value ?? '').replace(/\[[^\]]+\]/g, '').replace(/\s+/g, ' ').trim();
+    const numberValue = (value: string | null): number => {
+      const normalized = normalize(value).replace(/[−–]/g, '-');
+      const matched = normalized.match(/[+-]?\d+/);
+
+      return matched ? Number.parseInt(matched[0], 10) : 0;
+    };
+    const aliases = {
+      position: ['pos', 'position'],
+      team: ['team', 'club'],
+      played: ['pld', 'played', 'mp'],
+      won: ['w', 'won'],
+      drawn: ['d', 'drawn'],
+      lost: ['l', 'lost'],
+      goalsFor: ['gf', 'goals for'],
+      goalsAgainst: ['ga', 'goals against'],
+      goalDifference: ['gd', 'goal difference'],
+      points: ['pts', 'points'],
+    };
+    const tables = Array.from(document.querySelectorAll<HTMLTableElement>('table'));
+
+    for (const table of tables) {
+      const tableRows = Array.from(table.querySelectorAll('tr'));
+      const headerRow = tableRows.find((row) => {
+        const headers = Array.from(
+          row.querySelectorAll<HTMLElement>(':scope > th, :scope > td'),
+        ).map((cell) => normalize(cell.textContent).toLowerCase());
+
+        return (
+          headers.some((header) => aliases.position.includes(header)) &&
+          headers.some((header) => aliases.team.includes(header)) &&
+          headers.some((header) => aliases.played.includes(header)) &&
+          headers.some((header) => aliases.points.includes(header))
+        );
+      });
+
+      if (!headerRow) {
+        continue;
+      }
+
+      const headers = Array.from(
+        headerRow.querySelectorAll<HTMLElement>(':scope > th, :scope > td'),
+      ).map((cell) => normalize(cell.textContent).toLowerCase());
+      const indexOf = (values: string[]): number =>
+        headers.findIndex((header) => values.includes(header));
+      const indexes = {
+        position: indexOf(aliases.position),
+        team: indexOf(aliases.team),
+        played: indexOf(aliases.played),
+        won: indexOf(aliases.won),
+        drawn: indexOf(aliases.drawn),
+        lost: indexOf(aliases.lost),
+        goalsFor: indexOf(aliases.goalsFor),
+        goalsAgainst: indexOf(aliases.goalsAgainst),
+        goalDifference: indexOf(aliases.goalDifference),
+        points: indexOf(aliases.points),
+      };
+      const rows = tableRows
+        .slice(tableRows.indexOf(headerRow) + 1)
+        .map((row) => {
+          const cells = Array.from(
+            row.querySelectorAll<HTMLElement>(':scope > th, :scope > td'),
+          );
+          const teamCell = cells[indexes.team];
+          const teamAnchor = teamCell?.querySelector<HTMLAnchorElement>(
+            'a[href]:not(.new):not(.image)',
+          );
+          const position = numberValue(cells[indexes.position]?.textContent ?? '');
+          const teamName = normalize(teamAnchor?.textContent ?? teamCell?.textContent ?? '');
+
+          if (!position || !teamName) {
+            return null;
+          }
+
+          return {
+            position,
+            teamName,
+            teamUrl: teamAnchor?.href,
+            played: numberValue(cells[indexes.played]?.textContent ?? ''),
+            won: numberValue(cells[indexes.won]?.textContent ?? ''),
+            drawn: numberValue(cells[indexes.drawn]?.textContent ?? ''),
+            lost: numberValue(cells[indexes.lost]?.textContent ?? ''),
+            goalsFor: numberValue(cells[indexes.goalsFor]?.textContent ?? ''),
+            goalsAgainst: numberValue(
+              cells[indexes.goalsAgainst]?.textContent ?? '',
+            ),
+            goalDifference: numberValue(
+              cells[indexes.goalDifference]?.textContent ?? '',
+            ),
+            points: numberValue(cells[indexes.points]?.textContent ?? ''),
+          };
+        })
+        .filter(
+          (row): row is ScrapedClassementRow => row !== null,
+        );
+
+      if (rows.length > 0) {
+        return {
+          title: document.querySelector('h1')?.textContent ?? '',
+          rows,
+        };
+      }
+    }
+
+    return {
+      title: document.querySelector('h1')?.textContent ?? '',
+      rows: [],
+    };
+  });
+  const seasonText = `${decodeURIComponent(seasonUrl)} ${result.title}`;
+  const seasonMatch = seasonText.match(/(20\d{2})\s*[–-]\s*(?:\d{2}|20\d{2})/);
+  const seasonYear = seasonMatch
+    ? Number.parseInt(seasonMatch[1], 10)
+    : 2026;
+
+  return {
+    seasonUrl,
+    seasonYear,
+    rows: result.rows,
+  };
+}
+
 export async function syncYears(): Promise<void> {
   syncState.phase = 'years';
   const years = Array.from({ length: 27 }, (_, index) => 2000 + index);
@@ -786,6 +1086,116 @@ export async function syncYears(): Promise<void> {
     })),
   );
   syncState.yearsSaved = years.length;
+}
+
+export async function syncClassement(page: Page): Promise<void> {
+  syncState.phase = 'classements';
+  const leagues = await LeagueModel.find({
+    sourceUrl: {
+      $exists: true,
+      $ne: null,
+    },
+  });
+  const teams = await TeamModel.find({}, { externalId: 1, name: 1 });
+  const teamsByExternalId = new Map(
+    teams.map((team) => [team.externalId, team]),
+  );
+  const teamsByName = new Map(
+    teams.map((team) => [team.name.toLowerCase(), team]),
+  );
+
+  for (const league of leagues) {
+    if (!league.sourceUrl) {
+      continue;
+    }
+
+    try {
+      const classement = await scrapeClassement(page, {
+        name: league.name,
+        sourceUrl: league.sourceUrl,
+      });
+      const year = await YearModel.findOneAndUpdate(
+        {
+          year: classement.seasonYear,
+        },
+        {
+          $set: {
+            externalId: `year:${classement.seasonYear}`,
+            name: String(classement.seasonYear),
+            year: classement.seasonYear,
+          },
+        },
+        {
+          upsert: true,
+          new: true,
+          setDefaultsOnInsert: true,
+        },
+      );
+      const operations = [];
+
+      for (const row of classement.rows) {
+        const teamExternalId = row.teamUrl
+          ? wikipediaExternalId(row.teamUrl, classement.seasonUrl)
+          : undefined;
+        const team =
+          (teamExternalId
+            ? teamsByExternalId.get(teamExternalId)
+            : undefined) ?? teamsByName.get(row.teamName.toLowerCase());
+
+        if (!team) {
+          syncState.classementTeamsMissing += 1;
+          continue;
+        }
+
+        operations.push({
+          updateOne: {
+            filter: {
+              league: league._id,
+              year: year._id,
+              team: team._id,
+            },
+            update: {
+              $set: {
+                externalId: `${league.externalId}:${classement.seasonYear}:${team.externalId}`,
+                position: row.position,
+                played: row.played,
+                won: row.won,
+                drawn: row.drawn,
+                lost: row.lost,
+                goalsFor: row.goalsFor,
+                goalsAgainst: row.goalsAgainst,
+                goalDifference: row.goalDifference,
+                points: row.points,
+                team: team._id,
+                league: league._id,
+                year: year._id,
+                sourceUrl: classement.seasonUrl,
+                scrapedAt: new Date(),
+              },
+            },
+            upsert: true,
+          },
+        });
+      }
+
+      if (operations.length > 0) {
+        await ClassementModel.bulkWrite(operations);
+        syncState.classementsSaved += operations.length;
+      }
+
+      console.log(
+        `[classement] ${league.name}: ${operations.length} rows saved`,
+      );
+    } catch (error) {
+      syncState.classementPagesFailed += 1;
+      console.error(
+        `[classement] Failed to synchronize ${league.name}:`,
+        error instanceof Error ? error.message : error,
+      );
+    }
+
+    await new Promise((resolve) => setTimeout(resolve, 300));
+  }
 }
 
 export async function syncCountries(page: Page): Promise<void> {
@@ -811,6 +1221,55 @@ export async function syncCountries(page: Page): Promise<void> {
       },
     );
     syncState.countriesSaved += 1;
+  }
+}
+
+export async function syncStadium(
+  page: Page,
+  team: ScrapedTeam,
+  teamId: Types.ObjectId,
+  countryId: Types.ObjectId,
+): Promise<void> {
+  syncState.phase = 'stadiums';
+
+  try {
+    const stadium = await scrapeStadium(page, team);
+
+    if (!stadium) {
+      console.log(`[stadium] ${team.name}: stadium not available`);
+      return;
+    }
+
+    await StadiumModel.updateOne(
+      {
+        externalId: stadium.externalId,
+      },
+      {
+        $set: {
+          name: stadium.name,
+          capacity: stadium.capacity,
+          imageUrl: null,
+          mobileImageUrl: null,
+          country: countryId,
+          sourceUrl: stadium.sourceUrl,
+          scrapedAt: new Date(),
+        },
+        $addToSet: {
+          teams: teamId,
+        },
+      },
+      {
+        upsert: true,
+      },
+    );
+    syncState.stadiumsSaved += 1;
+    console.log(`[stadium] ${team.name}: ${stadium.name} saved`);
+  } catch (error) {
+    syncState.stadiumPagesFailed += 1;
+    console.error(
+      `[stadium] Failed to synchronize ${team.name}:`,
+      error instanceof Error ? error.message : error,
+    );
   }
 }
 
@@ -1008,6 +1467,7 @@ export async function syncTeams(
 
       if (teamDocument) {
         await syncTeamImage(page, team, teamDocument._id);
+        await syncStadium(page, team, teamDocument._id, countryId);
         await syncCoach(page, team, teamDocument._id);
         await syncPlayers(page, team, teamDocument._id);
       }
@@ -1092,6 +1552,7 @@ async function runWikipediaMasterSync(): Promise<void> {
     await syncYears();
     await syncCountries(page);
     await syncLeagues(page);
+    await syncClassement(page);
 
     syncState.status = 'completed';
     syncState.phase = 'completed';
