@@ -1,4 +1,6 @@
-export interface Country {
+import type { ImageFields } from './image.interface';
+
+export interface Country extends ImageFields {
   externalId: string;
   name: string;
   code?: string;

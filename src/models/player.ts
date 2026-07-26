@@ -6,25 +6,27 @@ import {
   Types,
 } from 'mongoose';
 
-import type { Team } from '../interfaces/team.interface';
+import type { Player } from '../interfaces/player.interface';
 
-const teamSchema = new Schema<Team>(
+const playerSchema = new Schema<Player>(
   {
     externalId: {
       type: String,
       required: true,
       trim: true,
+      unique: true,
     },
     name: {
       type: String,
       required: true,
       trim: true,
     },
-    shortName: {
+    position: {
       type: String,
       trim: true,
+      uppercase: true,
     },
-    logoUrl: {
+    nationality: {
       type: String,
       trim: true,
     },
@@ -38,16 +40,11 @@ const teamSchema = new Schema<Team>(
       trim: true,
       default: null,
     },
-    country: {
+    team: {
       type: Types.ObjectId,
-      ref: 'Country',
+      ref: 'Team',
+      required: true,
     },
-    leagues: [
-      {
-        type: Types.ObjectId,
-        ref: 'League',
-      },
-    ],
     sourceUrl: {
       type: String,
       trim: true,
@@ -63,9 +60,9 @@ const teamSchema = new Schema<Team>(
   },
 );
 
-teamSchema.index({ externalId: 1 }, { unique: true });
-teamSchema.index({ name: 1 });
-teamSchema.index({ leagues: 1 });
+playerSchema.index({ team: 1 });
+playerSchema.index({ name: 1 });
 
-export const TeamModel =
-  (models.Team as Model<Team> | undefined) ?? model<Team>('Team', teamSchema);
+export const PlayerModel =
+  (models.Player as Model<Player> | undefined) ??
+  model<Player>('Player', playerSchema);

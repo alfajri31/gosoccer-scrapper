@@ -28,6 +28,16 @@ const leagueSchema = new Schema<League>(
       type: String,
       trim: true,
     },
+    imageUrl: {
+      type: String,
+      trim: true,
+      default: null,
+    },
+    mobileImageUrl: {
+      type: String,
+      trim: true,
+      default: null,
+    },
     country: {
       type: Types.ObjectId,
       ref: 'Country',

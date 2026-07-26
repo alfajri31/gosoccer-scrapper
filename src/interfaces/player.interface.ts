@@ -2,12 +2,12 @@ import type { Types } from 'mongoose';
 
 import type { ImageFields } from './image.interface';
 
-export interface League extends ImageFields {
+export interface Player extends ImageFields {
   externalId: string;
   name: string;
-  shortName?: string;
-  logoUrl?: string;
-  country: Types.ObjectId;
+  position?: string;
+  nationality?: string;
+  team: Types.ObjectId;
   sourceUrl?: string;
   scrapedAt: Date;
 }

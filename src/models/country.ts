@@ -29,6 +29,16 @@ const countrySchema = new Schema<Country>(
       type: String,
       trim: true,
     },
+    imageUrl: {
+      type: String,
+      trim: true,
+      default: null,
+    },
+    mobileImageUrl: {
+      type: String,
+      trim: true,
+      default: null,
+    },
     sourceUrl: {
       type: String,
       trim: true,
