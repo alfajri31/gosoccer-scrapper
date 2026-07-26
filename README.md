@@ -1,8 +1,80 @@
-# Gosoccer Scrapper
+# Soccer Scrapper
 
-API scraper berbasis Node.js, Express, TypeScript, dan Puppeteer.
+Backend data sepak bola menggunakan Node.js, Express, TypeScript, MongoDB, dan
+Mongoose.
 
-## Flow Migrasi JavaScript ke TypeScript
+## Struktur Proyek
+
+```text
+soccer-scrapper/
+├── src/
+│   ├── controllers/
+│   ├── db/
+│   │   └── db.ts
+│   ├── interfaces/
+│   │   ├── country.interface.ts
+│   │   ├── league.interface.ts
+│   │   ├── live.interface.ts
+│   │   ├── match.interface.ts
+│   │   ├── odds.interface.ts
+│   │   ├── schedule.interface.ts
+│   │   └── team.interface.ts
+│   ├── middlewares/
+│   ├── models/
+│   │   ├── country.ts
+│   │   ├── league.ts
+│   │   ├── live.ts
+│   │   ├── match.ts
+│   │   ├── odds.ts
+│   │   ├── schedule.ts
+│   │   └── team.ts
+│   ├── routes/
+│   ├── app.ts
+│   └── server.ts
+├── .env
+├── package.json
+└── tsconfig.json
+```
+
+Pembagian tanggung jawab:
+
+| Folder | Tanggung jawab |
+| --- | --- |
+| `interfaces` | Mendefinisikan bentuk data TypeScript |
+| `models` | Mendefinisikan Mongoose schema, index, dan model |
+| `db` | Mengelola koneksi MongoDB |
+| `routes` | Mendefinisikan endpoint Express |
+| `controllers` | Menangani request dan response |
+| `middlewares` | Menangani proses lintas endpoint seperti error |
+
+## Instalasi
+
+Masuk ke folder proyek dan pasang dependency:
+
+```bash
+cd soccer-scrapper
+npm install
+```
+
+Development dependency TypeScript:
+
+```bash
+npm install -D typescript tsx @types/node @types/express @types/cors
+```
+
+Runtime dependency database:
+
+```bash
+npm install mongoose
+```
+
+Mongoose sudah membawa tipe TypeScript sendiri. Jangan memasang
+`@types/mongoose`.
+
+Opsi `-D` berarti `--save-dev`, bukan global. Package development dipasang
+secara lokal dan dicatat pada `devDependencies`.
+
+## Flow JavaScript ke TypeScript
 
 ```text
 Instal TypeScript dan type definitions
@@ -15,6 +87,8 @@ Instal TypeScript dan type definitions
                   ↓
  Ubah module.exports menjadi export
                   ↓
+   Pisahkan interface dari implementasi
+                  ↓
  Tambahkan tipe parameter dan hasil fungsi
                   ↓
        Perbarui script package.json
@@ -26,60 +100,26 @@ Instal TypeScript dan type definitions
        Jalankan JavaScript dari dist
 ```
 
-Setiap langkah pada flow tersebut dijelaskan pada section berikut.
+### 1. Instal TypeScript
 
-## 1. Instal TypeScript dan Type Definitions
-
-### Penjelasan
-
-TypeScript tidak harus dipasang secara global. TypeScript sebaiknya dipasang
-sebagai development dependency lokal agar setiap developer menggunakan versi
-yang sama sesuai `package.json`.
-
-Package `@types` menyediakan informasi tipe untuk library JavaScript. Express,
-Node.js, dan CORS memerlukan package tersebut agar TypeScript mengenali API,
-parameter, dan object yang tersedia.
-
-### Perintah
+`typescript` digunakan untuk pemeriksaan tipe dan build. `tsx` menjalankan
+source TypeScript secara langsung saat development.
 
 ```bash
 npm install -D typescript tsx @types/node @types/express @types/cors
 ```
 
-`-D` adalah singkatan dari `--save-dev`, bukan global. Instalasi global
-menggunakan `-g`.
+### 2. Konfigurasi TypeScript
 
-### Fungsi Package
-
-| Package | Fungsi |
-| --- | --- |
-| `typescript` | Memeriksa dan mengompilasi TypeScript |
-| `tsx` | Menjalankan file TypeScript saat development |
-| `@types/node` | Menyediakan tipe API Node.js |
-| `@types/express` | Menyediakan tipe Express |
-| `@types/cors` | Menyediakan tipe middleware CORS |
-
-### Hasil
-
-Package tersebut tercatat di `devDependencies` dan dapat digunakan melalui
-script NPM tanpa instalasi global.
-
-## 2. Buat `tsconfig.json`
-
-### Penjelasan
-
-`tsconfig.json` adalah konfigurasi compiler TypeScript. File ini menentukan
-lokasi source, lokasi output, versi JavaScript tujuan, module system, dan aturan
-pemeriksaan tipe.
-
-### Konfigurasi
+`tsconfig.json` mengatur source, output build, module system, dan pemeriksaan
+tipe:
 
 ```json
 {
   "compilerOptions": {
     "target": "ES2022",
-    "module": "CommonJS",
-    "moduleResolution": "Node",
+    "module": "Node16",
+    "moduleResolution": "Node16",
     "rootDir": "src",
     "outDir": "dist",
     "strict": true,
@@ -92,222 +132,110 @@ pemeriksaan tipe.
 }
 ```
 
-### Properti Penting
+`Node16` digunakan karena `moduleResolution: "Node"` adalah mode lama yang
+dipetakan ke `node10` dan telah deprecated.
 
-| Properti | Fungsi |
-| --- | --- |
-| `rootDir` | Menentukan folder source TypeScript |
-| `outDir` | Menentukan folder JavaScript hasil build |
-| `strict` | Mengaktifkan pemeriksaan tipe yang ketat |
-| `esModuleInterop` | Memudahkan import package CommonJS |
-| `include` | Menentukan file yang diperiksa |
-| `exclude` | Menentukan folder yang tidak diperiksa |
-
-### Hasil
-
-TypeScript mengetahui bahwa source berasal dari `src` dan hasil build harus
-ditulis ke `dist`.
+### 3. Ubah Ekstensi Source
 
 ```text
-src/*.ts → TypeScript compiler → dist/*.js
+server.js → server.ts
+app.js    → app.ts
 ```
 
-## 3. Ubah File `.js` Menjadi `.ts`
+Hapus file `.js` lama setelah migrasi. Menyimpan `.js` dan `.ts` dengan nama
+modul yang sama dapat membuat resolver memilih file yang tidak diharapkan.
 
-### Penjelasan
+### 4. Ubah Import dan Export
 
-Ekstensi `.ts` menandakan bahwa file merupakan source TypeScript. Migrasi dapat
-dilakukan bertahap dari entry point sampai service.
-
-### Perubahan File
-
-```text
-src/server.js                         → src/server.ts
-src/app.js                            → src/app.ts
-src/routes/scrape.routes.js           → src/routes/scrape.routes.ts
-src/controllers/scrape.controller.js  → src/controllers/scrape.controller.ts
-src/services/scraper.service.js       → src/services/scraper.service.ts
-src/middlewares/error-handler.js      → src/middlewares/error-handler.ts
-```
-
-File `.js` lama dihapus setelah isinya dipindahkan. Jangan menyimpan file `.js`
-dan `.ts` dengan nama modul yang sama karena module resolver dapat memilih file
-yang tidak diharapkan.
-
-### Hasil
-
-Seluruh source di dalam `src` menggunakan TypeScript:
-
-```text
-src/
-├── controllers/
-│   └── scrape.controller.ts
-├── middlewares/
-│   └── error-handler.ts
-├── routes/
-│   └── scrape.routes.ts
-├── services/
-│   └── scraper.service.ts
-├── app.ts
-└── server.ts
-```
-
-## 4. Ubah `require` Menjadi `import`
-
-### Penjelasan
-
-Source JavaScript lama menggunakan `require` dari CommonJS. Pada source
-TypeScript, dependency dan module lokal diimpor menggunakan sintaks `import`.
-
-### Sebelum
+JavaScript CommonJS:
 
 ```js
 const express = require('express');
-const app = require('./app');
-```
-
-### Sesudah
-
-```ts
-import express from 'express';
-import app from './app';
-```
-
-Untuk nilai yang hanya dipakai sebagai tipe, gunakan `import type`:
-
-```ts
-import type { RequestHandler } from 'express';
-```
-
-`import type` tidak menghasilkan import runtime pada JavaScript hasil build.
-
-### Hasil
-
-Dependency dan hubungan antar-file dapat dianalisis oleh TypeScript. Editor juga
-dapat menyediakan autocomplete dan pemeriksaan nama export.
-
-## 5. Ubah `module.exports` Menjadi `export`
-
-### Penjelasan
-
-Cara mengimpor sebuah nilai harus sesuai dengan cara nilai tersebut di-export.
-Ada dua bentuk export, yaitu default export dan named export.
-
-### Default Export
-
-Sebelum:
-
-```js
 module.exports = app;
 ```
 
-Sesudah:
+TypeScript:
 
 ```ts
+import express from 'express';
 export default app;
 ```
 
-Import-nya tidak memakai kurung kurawal:
+Named export harus memakai named import:
 
 ```ts
-import app from './app';
+export const MatchModel = model('Match', matchSchema);
 ```
-
-### Named Export
-
-Sebelum:
-
-```js
-module.exports = { scrape };
-```
-
-Sesudah:
 
 ```ts
-export { scrape };
+import { MatchModel } from './models/match';
 ```
 
-Import-nya memakai kurung kurawal:
+Untuk nilai yang hanya diperlukan oleh compiler, gunakan `import type`:
 
 ```ts
-import { scrape } from './services/scraper.service';
+import type { Match } from '../interfaces/match.interface';
 ```
 
-### Hasil
+### 5. Pisahkan Interface dan Model
 
-Semua module menggunakan pola import dan export yang konsisten:
+Interface mendeskripsikan bentuk data:
 
-```text
-server → app → route → controller → service
-```
+```ts
+// src/interfaces/match.interface.ts
+import type { Types } from 'mongoose';
 
-Default import dan named import tidak boleh tertukar. Bentuk yang tidak cocok
-dapat menghasilkan nilai `undefined` saat runtime.
-
-## 6. Tambahkan Tipe Parameter dan Hasil Fungsi
-
-### Penjelasan
-
-TypeScript memeriksa bentuk data yang diterima dan dikembalikan oleh fungsi.
-Tipe membantu menemukan kesalahan sebelum aplikasi dijalankan.
-
-### Sebelum
-
-```js
-async function scrape(url) {
-  // ...
+export interface Match {
+  externalId: string;
+  league: Types.ObjectId;
+  homeTeam: Types.ObjectId;
+  awayTeam: Types.ObjectId;
+  kickoffAt: Date;
 }
 ```
 
-### Sesudah
+Model mendeskripsikan aturan MongoDB:
 
 ```ts
-type ScrapeResult = {
-  title: string;
-  url: string;
-  text: string;
-};
+// src/models/match.ts
+import { model, Schema, Types } from 'mongoose';
+import type { Match } from '../interfaces/match.interface';
 
-async function scrape(url: string): Promise<ScrapeResult> {
-  // ...
-}
+const matchSchema = new Schema<Match>({
+  externalId: {
+    type: String,
+    required: true,
+  },
+  league: {
+    type: Types.ObjectId,
+    ref: 'League',
+    required: true,
+  },
+  homeTeam: {
+    type: Types.ObjectId,
+    ref: 'Team',
+    required: true,
+  },
+  awayTeam: {
+    type: Types.ObjectId,
+    ref: 'Team',
+    required: true,
+  },
+  kickoffAt: {
+    type: Date,
+    required: true,
+  },
+});
+
+export const MatchModel = model<Match>('Match', matchSchema);
 ```
 
-Express handler dapat menggunakan tipe dari Express:
+Interface hanya ada saat pemeriksaan TypeScript. Model tersedia saat runtime
+dan digunakan untuk berkomunikasi dengan MongoDB.
 
-```ts
-import type { RequestHandler } from 'express';
+### 6. Perbarui Script
 
-export const scrapePage: RequestHandler = async (req, res, next) => {
-  // ...
-};
-```
-
-Input HTTP tetap harus divalidasi karena nilainya baru diketahui saat runtime:
-
-```ts
-if (typeof req.query.url !== 'string' || !req.query.url) {
-  res.status(400).json({
-    message: 'Query parameter "url" is required',
-  });
-  return;
-}
-```
-
-### Hasil
-
-Parameter, hasil fungsi, request Express, dan bentuk response lebih jelas.
-Kesalahan tipe dapat ditemukan oleh editor atau perintah `typecheck`.
-
-## 7. Perbarui Script `package.json`
-
-### Penjelasan
-
-Development dan production menggunakan flow yang berbeda. Development dapat
-menjalankan TypeScript dengan `tsx`, sedangkan production menjalankan
-JavaScript hasil build dari folder `dist`.
-
-### Konfigurasi
+Konfigurasi yang direkomendasikan:
 
 ```json
 {
@@ -321,166 +249,39 @@ JavaScript hasil build dari folder `dist`.
 }
 ```
 
-### Fungsi Script
+### 7. Typecheck dan Build
 
-| Script | Fungsi |
-| --- | --- |
-| `npm run dev` | Menjalankan TypeScript dan restart saat source berubah |
-| `npm run typecheck` | Memeriksa tipe tanpa membuat file JavaScript |
-| `npm run build` | Mengompilasi TypeScript ke folder `dist` |
-| `npm start` | Menjalankan JavaScript hasil build |
-
-### Hasil
-
-Proyek memiliki perintah terpisah untuk development, pemeriksaan tipe, build,
-dan production.
-
-## 8. Jalankan Typecheck
-
-### Penjelasan
-
-Typecheck memeriksa semua file TypeScript tanpa menjalankan aplikasi dan tanpa
-menghasilkan file JavaScript.
-
-### Perintah
+Periksa tipe tanpa membuat file:
 
 ```bash
 npm run typecheck
 ```
 
-Script tersebut menjalankan:
-
-```bash
-tsc --noEmit
-```
-
-Jika ada tipe parameter yang salah, import yang tidak tersedia, atau hasil
-fungsi yang tidak sesuai, TypeScript akan menampilkan lokasi error.
-
-### Hasil
-
-Jika perintah selesai tanpa error, source lolos pemeriksaan tipe dan siap
-dibuild.
-
-## 9. Build TypeScript ke JavaScript
-
-### Penjelasan
-
-Node.js production menjalankan JavaScript. Compiler `tsc` mengubah source
-TypeScript dari `src` menjadi JavaScript di `dist`.
-
-### Perintah
+Build TypeScript menjadi JavaScript:
 
 ```bash
 npm run build
 ```
 
-### Proses
-
-```text
-tsc membaca tsconfig.json
-            ↓
-memeriksa file src/**/*.ts
-            ↓
-mengompilasi TypeScript
-            ↓
-menulis JavaScript ke dist
-```
-
-Contoh hasil:
-
-```text
-src/server.ts → dist/server.js
-src/app.ts    → dist/app.js
-```
-
-### Hasil
-
-Folder `dist` berisi JavaScript yang siap dijalankan oleh Node.js. Folder ini
-merupakan hasil build dan tidak perlu diedit secara manual.
-
-## 10. Jalankan JavaScript dari `dist`
-
-### Penjelasan
-
-Setelah build berhasil, aplikasi production dijalankan dari JavaScript di
-folder `dist`, bukan langsung dari source `.ts`.
-
-### Perintah
+Jalankan hasil build:
 
 ```bash
 npm start
 ```
 
-Script tersebut menjalankan:
-
-```bash
-node dist/server.js
-```
-
-### Flow Production
+Flow production:
 
 ```text
-npm run typecheck
-        ↓
-npm run build
-        ↓
-src/*.ts dikompilasi menjadi dist/*.js
-        ↓
-npm start
-        ↓
-Node.js menjalankan dist/server.js
+src/*.ts
+   ↓ tsc
+dist/*.js
+   ↓ node
+dist/server.js
 ```
 
-### Hasil
+## MongoDB dengan Docker
 
-Server production berjalan menggunakan JavaScript hasil kompilasi yang sudah
-lolos pemeriksaan TypeScript.
-
-## Menjalankan Saat Development
-
-Saat development, build manual tidak diperlukan:
-
-```bash
-npm run dev
-```
-
-Flow development:
-
-```text
-npm run dev
-      ↓
-tsx watch src/server.ts
-      ↓
-server.ts mengimpor app.ts
-      ↓
-app.ts memasang middleware dan routes
-      ↓
-route memanggil controller
-      ↓
-controller memanggil service
-      ↓
-tsx restart otomatis saat source berubah
-```
-
-## Environment
-
-Buat `.env` dari file contoh:
-
-```bash
-cp .env.example .env
-```
-
-```dotenv
-PORT=3000
-PUPPETEER_HEADLESS=true
-```
-
-## Koneksi ke MongoDB
-
-### 1. Jalankan MongoDB dengan Docker
-
-Buat `docker-compose.yml` di root proyek:
+Gunakan Docker Compose agar database dapat dijalankan secara konsisten.
 
 ```yaml
 services:
@@ -492,7 +293,7 @@ services:
       - "27017:27017"
     environment:
       MONGO_INITDB_ROOT_USERNAME: admin
-      MONGO_INITDB_ROOT_PASSWORD: admin123
+      MONGO_INITDB_ROOT_PASSWORD: change-this-password
       MONGO_INITDB_DATABASE: gosoccer
     volumes:
       - mongodb_data:/data/db
@@ -501,63 +302,68 @@ volumes:
   mongodb_data:
 ```
 
-Jalankan container:
+Jalankan MongoDB:
 
 ```bash
 docker compose up -d
 ```
 
-Cek status container:
+Cek status:
 
 ```bash
 docker compose ps
 ```
 
-Data MongoDB disimpan di volume `mongodb_data`, sehingga tidak hilang ketika
-container dihentikan atau dibuat ulang.
+Lihat log:
 
-### 2. Tambahkan Connection String
+```bash
+docker compose logs -f mongodb
+```
 
-Tambahkan `MONGODB_URI` ke `.env`:
+Hentikan tanpa menghapus data:
+
+```bash
+docker compose down
+```
+
+Perintah berikut juga menghapus volume dan seluruh data:
+
+```bash
+docker compose down -v
+```
+
+## Environment Variable
+
+`process.env` merupakan fitur Node.js dan tidak perlu dipasang. Package
+`dotenv` digunakan untuk memuat isi `.env`.
+
+Buat `.env` di root `soccer-scrapper`:
 
 ```dotenv
 PORT=3000
-PUPPETEER_HEADLESS=true
-MONGODB_URI=mongodb://admin:admin123@localhost:27017/gosoccer?authSource=admin
+MONGODB_URI=mongodb://admin:change-this-password@localhost:27017/gosoccer?authSource=admin
 ```
 
-Tambahkan juga key tanpa nilai rahasia ke `.env.example`:
+Muat environment paling awal:
 
-```dotenv
-MONGODB_URI=mongodb://username:password@localhost:27017/database?authSource=admin
+```ts
+import 'dotenv/config';
 ```
 
-Penjelasan connection string:
+Jangan menulis username dan password database langsung di source. File `.env`
+harus tercantum di `.gitignore`.
 
-| Bagian | Fungsi |
-| --- | --- |
-| `admin:admin123` | Username dan password MongoDB |
-| `localhost:27017` | Host dan port MongoDB |
-| `gosoccer` | Database yang digunakan aplikasi |
-| `authSource=admin` | Database tempat root user melakukan autentikasi |
+Struktur MongoDB URI:
 
-File `.env` tidak boleh dimasukkan ke Git karena berisi kredensial.
-
-### 3. Instal Mongoose
-
-Mongoose digunakan untuk membuat koneksi, schema, model, dan query MongoDB dari
-aplikasi Node.js.
-
-```bash
-npm install mongoose
+```text
+mongodb://username:password@hostname:port/database?authSource=admin
 ```
 
-Mongoose sudah menyediakan tipe TypeScript, sehingga tidak perlu memasang
-`@types/mongoose`.
+Port dipisahkan dengan `:`, bukan `/`, dan URI tidak menggunakan `http://`.
 
-### 4. Buat Modul Koneksi
+## Koneksi Database
 
-Buat `src/config/database.ts`:
+Koneksi dibuat satu kali di `src/db/db.ts`:
 
 ```ts
 import mongoose from 'mongoose';
@@ -574,20 +380,13 @@ export async function connectDatabase(): Promise<void> {
 }
 ```
 
-Pemeriksaan `MONGODB_URI` diperlukan karena environment variable dapat bernilai
-`undefined`. Fungsi mengembalikan `Promise<void>` karena proses koneksi berjalan
-secara asynchronous.
-
-### 5. Hubungkan Database Sebelum Server Berjalan
-
-Perbarui `src/server.ts` agar Express baru menerima request setelah koneksi
-MongoDB berhasil:
+Database harus terhubung sebelum Express membuka port:
 
 ```ts
 import 'dotenv/config';
 
 import app from './app';
-import { connectDatabase } from './config/database';
+import { connectDatabase } from './db/db';
 
 const port = Number(process.env.PORT) || 3000;
 
@@ -607,85 +406,178 @@ async function startServer(): Promise<void> {
 void startServer();
 ```
 
-Flow koneksi:
+Flow startup:
 
 ```text
-npm run dev
-      ↓
 server.ts membaca .env
-      ↓
+          ↓
 connectDatabase membaca MONGODB_URI
-      ↓
-Mongoose terhubung ke container MongoDB
-      ↓
+          ↓
+Mongoose terhubung ke MongoDB
+          ↓
 Express membuka port HTTP
 ```
 
-Jika koneksi gagal, server tidak dibuka dan aplikasi berhenti dengan exit code
-`1`. Hal ini mencegah API menerima request ketika database belum tersedia.
+Jangan membuka koneksi baru dari controller untuk setiap request.
 
-### 6. Verifikasi MongoDB
+## Model dan Relasi
 
-Lihat log container:
+Model yang tersedia:
 
-```bash
-docker compose logs -f mongodb
+| Model | Fungsi |
+| --- | --- |
+| `Country` | Negara asal liga atau tim |
+| `League` | Kompetisi sepak bola |
+| `Team` | Klub atau tim |
+| `Match` | Data utama pertandingan |
+| `Schedule` | Informasi jadwal pertandingan |
+| `LiveMatch` | Kondisi pertandingan yang sedang berjalan |
+| `Odds` | Pasar dan nilai odds pertandingan |
+
+Relasi disimpan sebagai `ObjectId` dan ditentukan melalui `ref`:
+
+```text
+Country 1 ─── N League
+Country 1 ─── N Team
+League  1 ─── N Match
+Team    1 ─── N Match
+Match   1 ─── 1 Schedule
+Match   1 ─── 1 LiveMatch
+Match   1 ─── N Odds
 ```
 
-Masuk ke MongoDB shell:
+Contoh relasi:
 
-```bash
-docker exec -it gosoccer-mongodb mongosh \
-  -u admin \
-  -p admin123 \
-  --authenticationDatabase admin
+```ts
+league: {
+  type: Types.ObjectId,
+  ref: 'League',
+  required: true,
+}
 ```
 
-Setelah masuk ke `mongosh`, pilih database:
+- `Types.ObjectId` adalah `_id` yang disimpan pada dokumen.
+- `ref: 'League'` menunjukkan model tujuan.
+- Nilai `ref` harus sama dengan nama pada `model('League', ...)`.
 
-```javascript
-use gosoccer
+Ambil dokumen beserta relasinya menggunakan `populate()`:
+
+```ts
+const match = await MatchModel.findById(matchId)
+  .populate('league')
+  .populate('homeTeam')
+  .populate('awayTeam');
 ```
 
-Tampilkan collection:
+Tanpa `populate`, field relasi hanya berisi `ObjectId`. MongoDB tidak memiliki
+foreign key constraint seperti SQL, sehingga aplikasi tetap perlu menjaga
+validitas relasi.
 
-```javascript
-show collections
+## Membuat Data Awal
+
+Gunakan upsert agar startup berulang tidak membuat dokumen duplikat:
+
+```ts
+await CountryModel.updateOne(
+  { externalId: 'ID' },
+  {
+    $setOnInsert: {
+      externalId: 'ID',
+      name: 'Indonesia',
+      code: 'ID',
+    },
+  },
+  {
+    upsert: true,
+  },
+);
 ```
 
-### 7. Menghentikan MongoDB
+Flow:
 
-Hentikan dan hapus container tanpa menghapus data:
-
-```bash
-docker compose down
+```text
+Hubungkan MongoDB
+        ↓
+Jalankan seed dengan upsert
+        ↓
+Buat dokumen hanya jika belum ada
+        ↓
+Jalankan Express
 ```
 
-Hentikan container sekaligus hapus seluruh data MongoDB:
+Hindari `Model.create()` pada setiap startup jika dokumen harus unik.
 
-```bash
-docker compose down -v
+## Penyimpanan Gambar
+
+Untuk tahap awal, simpan URL gambar pada MongoDB:
+
+```ts
+logoUrl?: string;
+flagUrl?: string;
 ```
 
-Opsi `-v` menghapus volume `mongodb_data`. Gunakan hanya ketika data memang
-boleh dihapus.
+Object storage seperti MinIO belum diperlukan jika aplikasi hanya menggunakan
+URL logo dari sumber.
 
-## Endpoint
+Gunakan MinIO atau object storage kompatibel S3 ketika:
 
-Health check:
+- Sistem perlu memiliki salinan gambarnya sendiri.
+- URL sumber tidak boleh menjadi ketergantungan.
+- File harus dikelola, dibatasi aksesnya, atau disajikan dari storage sendiri.
 
-```http
-GET /health
+Jika object storage digunakan, MongoDB hanya menyimpan metadata:
+
+```ts
+export interface ImageAsset {
+  bucket: string;
+  objectKey: string;
+  contentType: string;
+  size: number;
+  publicUrl?: string;
+}
 ```
 
-Scrape halaman:
+Flow penyimpanan:
 
-```http
-GET /api/scrape?url=https://example.com
+```text
+Terima atau unduh file
+        ↓
+Upload binary ke object storage
+        ↓
+Simpan objectKey dan metadata di MongoDB
 ```
 
-Contoh request:
+Jangan menyimpan binary gambar langsung dalam model utama. GridFS tersedia
+untuk kebutuhan file di MongoDB, tetapi object storage biasanya lebih sesuai
+untuk aset gambar aplikasi.
 
-```bash
-curl "http://localhost:3000/api/scrape?url=https://example.com"
+## Debug di Cursor
+
+Cursor menggunakan debugger yang kompatibel dengan VS Code. Buat
+`.vscode/launch.json` di root workspace:
+
+```json
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "Debug Soccer Scrapper",
+      "type": "node",
+      "request": "launch",
+      "runtimeExecutable": "${workspaceFolder}/soccer-scrapper/node_modules/.bin/tsx",
+      "program": "${workspaceFolder}/soccer-scrapper/src/server.ts",
+      "cwd": "${workspaceFolder}/soccer-scrapper",
+      "envFile": "${workspaceFolder}/soccer-scrapper/.env",
+      "console": "integratedTerminal",
+      "internalConsoleOptions": "neverOpen",
+      "skipFiles": [
+        "<node_internals>/**",
+        "${workspaceFolder}/soccer-scrapper/node_modules/**"
+      ]
+    }
+  ]
+}
 ```
+
+Pasang breakpoint di sebelah nomor baris, buka **Run and Debug**, pilih
+**Debug Soccer Scrapper**, lalu tekan `F5`.

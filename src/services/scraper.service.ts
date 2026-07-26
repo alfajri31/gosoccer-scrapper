@@ -1,5 +1,3 @@
-import puppeteer from 'puppeteer';
-
 export type ScrapeResult = {
   title: string;
   url: string;
@@ -11,6 +9,7 @@ type AppError = Error & {
 };
 
 export async function scrape(url: string): Promise<ScrapeResult> {
+  const { default: puppeteer } = await import('puppeteer');
   const parsedUrl = new URL(url);
 
   if (!['http:', 'https:'].includes(parsedUrl.protocol)) {
