@@ -1,10 +1,20 @@
-const puppeteer = require('puppeteer');
+import puppeteer from 'puppeteer';
 
-async function scrape(url) {
+export type ScrapeResult = {
+  title: string;
+  url: string;
+  text: string;
+};
+
+type AppError = Error & {
+  status?: number;
+};
+
+export async function scrape(url: string): Promise<ScrapeResult> {
   const parsedUrl = new URL(url);
 
   if (!['http:', 'https:'].includes(parsedUrl.protocol)) {
-    const error = new Error('Only HTTP and HTTPS URLs are supported');
+    const error: AppError = new Error('Only HTTP and HTTPS URLs are supported');
     error.status = 400;
     throw error;
   }
@@ -29,6 +39,3 @@ async function scrape(url) {
     await browser.close();
   }
 }
-
-module.exports = { scrape };
-
