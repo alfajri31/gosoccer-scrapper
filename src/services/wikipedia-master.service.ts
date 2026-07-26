@@ -6,6 +6,7 @@ import type { Types } from 'mongoose';
 import { ClassementModel } from '../models/classement';
 import { CoachModel } from '../models/coach';
 import { CountryModel } from '../models/country';
+import { CupModel } from '../models/cup';
 import { LeagueModel } from '../models/league';
 import { PlayerModel } from '../models/player';
 import { StadiumModel } from '../models/stadium';
@@ -26,6 +27,13 @@ interface ScrapedCountry {
 }
 
 interface ScrapedLeague {
+  externalId: string;
+  name: string;
+  countryName: string;
+  sourceUrl: string;
+}
+
+interface ScrapedCup {
   externalId: string;
   name: string;
   countryName: string;
@@ -100,6 +108,7 @@ export interface WikipediaSyncState {
     | 'years'
     | 'countries'
     | 'leagues'
+    | 'cups'
     | 'teams'
     | 'stadiums'
     | 'coaches'
@@ -112,6 +121,9 @@ export interface WikipediaSyncState {
   leaguesSaved: number;
   leaguesProcessed: number;
   leaguePagesFailed: number;
+  cupsDiscovered: number;
+  cupsSaved: number;
+  cupPagesFailed: number;
   teamsSaved: number;
   teamsProcessed: number;
   teamPagesFailed: number;
@@ -143,6 +155,9 @@ function createIdleState(): WikipediaSyncState {
     leaguesSaved: 0,
     leaguesProcessed: 0,
     leaguePagesFailed: 0,
+    cupsDiscovered: 0,
+    cupsSaved: 0,
+    cupPagesFailed: 0,
     teamsSaved: 0,
     teamsProcessed: 0,
     teamPagesFailed: 0,
@@ -421,6 +436,98 @@ async function scrapeTopLeagues(page: Page): Promise<ScrapedLeague[]> {
     countryName: row.countryName,
     sourceUrl: row.href,
   }));
+}
+
+async function scrapeCups(page: Page): Promise<ScrapedCup[]> {
+  await page.goto(COMPETITION_LIST_URL, {
+    waitUntil: 'domcontentloaded',
+    timeout: 30000,
+  });
+
+  const rows = await page.evaluate(() => {
+    let currentHeading = '';
+    const cups: Array<{
+      countryName: string;
+      name: string;
+      href: string;
+    }> = [];
+
+    for (const element of document.querySelectorAll('h2, h3, h4, table')) {
+      if (/^H[2-4]$/.test(element.tagName)) {
+        currentHeading = (element.textContent ?? '')
+          .replace(/\[edit\]/gi, '')
+          .trim();
+        continue;
+      }
+
+      const table = element as HTMLTableElement;
+      const headers = Array.from(table.querySelectorAll('tr:first-child th')).map(
+        (header) => header.textContent?.trim().toLowerCase() ?? '',
+      );
+
+      if (
+        !headers.some((header) => header.includes('competitions')) ||
+        !headers.some(
+          (header) =>
+            header.includes('league/cup') ||
+            header.includes('teams/clubs'),
+        ) ||
+        !currentHeading
+      ) {
+        continue;
+      }
+
+      for (const row of table.querySelectorAll('tbody > tr')) {
+        const text = row.textContent?.replace(/\s+/g, ' ').trim() ?? '';
+        const normalizedText = text.toLowerCase();
+
+        if (
+          !/\bcup\b/i.test(text) ||
+          normalizedText.includes('women') ||
+          normalizedText.includes('youth') ||
+          normalizedText.includes('defunct')
+        ) {
+          continue;
+        }
+
+        const anchor = Array.from(
+          row.querySelectorAll<HTMLAnchorElement>(
+            'a[href]:not(.new):not([href*="#endnote"])',
+          ),
+        ).find(
+          (candidate) =>
+            new URL(candidate.href).pathname.startsWith('/wiki/') &&
+            (candidate.textContent?.trim().length ?? 0) > 0,
+        );
+        const name = anchor?.textContent?.trim();
+
+        if (!anchor || !name) {
+          continue;
+        }
+
+        cups.push({
+          countryName: currentHeading,
+          name,
+          href: anchor.href,
+        });
+      }
+    }
+
+    return cups;
+  });
+  const cups = new Map<string, ScrapedCup>();
+
+  for (const row of rows) {
+    const externalId = wikipediaExternalId(row.href, COMPETITION_LIST_URL);
+    cups.set(`${row.countryName}:${externalId}`, {
+      externalId,
+      name: row.name,
+      countryName: row.countryName,
+      sourceUrl: row.href,
+    });
+  }
+
+  return Array.from(cups.values());
 }
 
 async function scrapeTeams(
@@ -1538,6 +1645,79 @@ export async function syncLeagues(page: Page): Promise<void> {
   }
 }
 
+export async function syncCup(page: Page): Promise<void> {
+  syncState.phase = 'cups';
+
+  try {
+    const cups = await scrapeCups(page);
+    syncState.cupsDiscovered = cups.length;
+
+    for (const cup of cups) {
+      try {
+        const countryExternalId = `wikipedia:${cup.countryName.replace(
+          /\s+/g,
+          '_',
+        )}`;
+        const country = await CountryModel.findOneAndUpdate(
+          {
+            $or: [
+              { name: cup.countryName },
+              { externalId: countryExternalId },
+            ],
+          },
+          {
+            $setOnInsert: {
+              externalId: countryExternalId,
+              name: cup.countryName,
+              sourceUrl: wikipediaUrlForName(cup.countryName),
+            },
+          },
+          {
+            upsert: true,
+            new: true,
+            setDefaultsOnInsert: true,
+          },
+        );
+
+        await CupModel.updateOne(
+          {
+            externalId: cup.externalId,
+            country: country._id,
+          },
+          {
+            $set: {
+              name: cup.name,
+              imageUrl: null,
+              mobileImageUrl: null,
+              country: country._id,
+              sourceUrl: cup.sourceUrl,
+              scrapedAt: new Date(),
+            },
+          },
+          {
+            upsert: true,
+          },
+        );
+        syncState.cupsSaved += 1;
+      } catch (error) {
+        syncState.cupPagesFailed += 1;
+        console.error(
+          `[cup] Failed to synchronize ${cup.name}:`,
+          error instanceof Error ? error.message : error,
+        );
+      }
+    }
+
+    console.log(`[cup] ${syncState.cupsSaved} cups saved`);
+  } catch (error) {
+    syncState.cupPagesFailed += 1;
+    console.error(
+      '[cup] Failed to discover cups:',
+      error instanceof Error ? error.message : error,
+    );
+  }
+}
+
 async function runWikipediaMasterSync(): Promise<void> {
   const { default: puppeteer } = await import('puppeteer');
   const browser = await puppeteer.launch({
@@ -1552,6 +1732,7 @@ async function runWikipediaMasterSync(): Promise<void> {
     await syncYears();
     await syncCountries(page);
     await syncLeagues(page);
+    await syncCup(page);
     await syncClassement(page);
 
     syncState.status = 'completed';
