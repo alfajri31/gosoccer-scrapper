@@ -9,8 +9,11 @@ import { CountryModel } from '../models/country';
 import { CupModel } from '../models/cup';
 import { LeagueModel } from '../models/league';
 import { PlayerModel } from '../models/player';
+import { RefereeModel } from '../models/referee';
+import { SeasonModel } from '../models/season';
 import { StadiumModel } from '../models/stadium';
 import { TeamModel } from '../models/team';
+import { TopScorerModel } from '../models/top-scorer';
 import { YearModel } from '../models/year';
 
 const COUNTRY_LIST_URL =
@@ -89,6 +92,29 @@ interface ScrapedClassementPage {
   rows: ScrapedClassementRow[];
 }
 
+interface ScrapedSeason {
+  externalId: string;
+  name: string;
+  startYear: number;
+  endYear: number;
+  sourceUrl: string;
+}
+
+interface ScrapedReferee {
+  externalId: string;
+  name: string;
+  sourceUrl?: string;
+}
+
+interface ScrapedTopScorer {
+  rank: number;
+  goals: number;
+  playerName: string;
+  playerUrl?: string;
+  teamName?: string;
+  teamUrl?: string;
+}
+
 interface ScrapedTeamPage {
   players: ScrapedPlayer[];
   imageUrl?: string;
@@ -113,6 +139,9 @@ export interface WikipediaSyncState {
     | 'stadiums'
     | 'coaches'
     | 'players'
+    | 'seasons'
+    | 'referees'
+    | 'topScorers'
     | 'classements'
     | 'completed';
   yearsSaved: number;
@@ -132,6 +161,13 @@ export interface WikipediaSyncState {
   coachesSaved: number;
   coachPagesFailed: number;
   playersSaved: number;
+  seasonsSaved: number;
+  seasonPagesFailed: number;
+  refereesSaved: number;
+  refereePagesFailed: number;
+  topScorersSaved: number;
+  topScorerPagesFailed: number;
+  topScorerPlayersMissing: number;
   classementsSaved: number;
   classementPagesFailed: number;
   classementTeamsMissing: number;
@@ -166,6 +202,13 @@ function createIdleState(): WikipediaSyncState {
     coachesSaved: 0,
     coachPagesFailed: 0,
     playersSaved: 0,
+    seasonsSaved: 0,
+    seasonPagesFailed: 0,
+    refereesSaved: 0,
+    refereePagesFailed: 0,
+    topScorersSaved: 0,
+    topScorerPagesFailed: 0,
+    topScorerPlayersMissing: 0,
     classementsSaved: 0,
     classementPagesFailed: 0,
     classementTeamsMissing: 0,
@@ -996,6 +1039,254 @@ async function scrapeStadium(
   };
 }
 
+function parseSeasonYears(value: string): {
+  startYear: number;
+  endYear: number;
+} {
+  const decoded = decodeURIComponent(value).replace(/_/g, ' ');
+  const range = decoded.match(/(20\d{2})\s*[–-]\s*(\d{2}|20\d{2})/);
+
+  if (range) {
+    const startYear = Number.parseInt(range[1], 10);
+    const rawEndYear = Number.parseInt(range[2], 10);
+
+    return {
+      startYear,
+      endYear:
+        range[2].length === 2
+          ? Math.floor(startYear / 100) * 100 + rawEndYear
+          : rawEndYear,
+    };
+  }
+
+  const calendarYear = decoded.match(/\b(20\d{2})\b/);
+
+  if (calendarYear) {
+    const year = Number.parseInt(calendarYear[1], 10);
+    return { startYear: year, endYear: year };
+  }
+
+  const currentYear = new Date().getFullYear();
+  return { startYear: currentYear, endYear: currentYear };
+}
+
+async function scrapeCurrentSeason(
+  page: Page,
+  competition: { name: string; sourceUrl: string },
+): Promise<ScrapedSeason> {
+  await page.goto(competition.sourceUrl, {
+    waitUntil: 'domcontentloaded',
+    timeout: 30000,
+  });
+
+  const result = await page.evaluate(() => {
+    const normalize = (value: string | null): string =>
+      (value ?? '').replace(/\[[^\]]+\]/g, '').replace(/\s+/g, ' ').trim();
+    const rows = Array.from(
+      document.querySelectorAll<HTMLTableRowElement>('table.infobox tr'),
+    );
+    const currentRow = rows.find((row) => {
+      const label = normalize(
+        row.querySelector<HTMLElement>(':scope > th')?.textContent ?? '',
+      ).toLowerCase();
+
+      return label === 'current season' || label === 'current';
+    });
+    const currentAnchor =
+      currentRow?.querySelector<HTMLAnchorElement>('a[href]:not(.new)');
+    const seasonAnchor =
+      currentAnchor ??
+      Array.from(
+        document.querySelectorAll<HTMLAnchorElement>(
+          'table.infobox a[href]:not(.new)',
+        ),
+      ).find((anchor) =>
+        /20\d{2}\s*[–-]\s*(?:\d{2}|20\d{2})|\b20\d{2}\b/.test(
+          normalize(anchor.textContent),
+        ),
+      );
+
+    return {
+      name: normalize(seasonAnchor?.textContent ?? document.title),
+      href: seasonAnchor?.href ?? window.location.href,
+    };
+  });
+  const years = parseSeasonYears(`${result.name} ${result.href}`);
+
+  return {
+    externalId: wikipediaExternalId(result.href, competition.sourceUrl),
+    name:
+      result.name ||
+      (years.startYear === years.endYear
+        ? String(years.startYear)
+        : `${years.startYear}-${years.endYear}`),
+    ...years,
+    sourceUrl: result.href,
+  };
+}
+
+async function scrapeReferees(
+  page: Page,
+  season: ScrapedSeason,
+): Promise<ScrapedReferee[]> {
+  await page.goto(season.sourceUrl, {
+    waitUntil: 'domcontentloaded',
+    timeout: 30000,
+  });
+
+  const referees = await page.evaluate(() => {
+    const normalize = (value: string | null): string =>
+      (value ?? '').replace(/\[[^\]]+\]/g, '').replace(/\s+/g, ' ').trim();
+    const results: Array<{ name: string; href?: string }> = [];
+
+    for (const row of document.querySelectorAll<HTMLTableRowElement>('tr')) {
+      const cells = Array.from(
+        row.querySelectorAll<HTMLElement>(':scope > th, :scope > td'),
+      );
+      const refereeIndex = cells.findIndex((cell) =>
+        /^referee(?:s)?\b/i.test(normalize(cell.textContent)),
+      );
+
+      if (refereeIndex < 0) {
+        continue;
+      }
+
+      const valueCell = cells[refereeIndex + 1] ?? cells[refereeIndex];
+      const anchors = Array.from(
+        valueCell.querySelectorAll<HTMLAnchorElement>(
+          'a[href*="/wiki/"]:not(.new):not(.image)',
+        ),
+      );
+
+      if (anchors.length > 0) {
+        for (const anchor of anchors) {
+          const name = normalize(anchor.textContent);
+          if (name) results.push({ name, href: anchor.href });
+        }
+      } else {
+        const name = normalize(valueCell.textContent).replace(
+          /^referee(?:s)?\s*:?\s*/i,
+          '',
+        );
+        if (name) results.push({ name });
+      }
+    }
+
+    return results;
+  });
+  const unique = new Map<string, ScrapedReferee>();
+
+  for (const referee of referees) {
+    const externalId = referee.href
+      ? wikipediaExternalId(referee.href, season.sourceUrl)
+      : `wikipedia:referee:${referee.name
+          .toLowerCase()
+          .replace(/[^a-z0-9]+/g, '-')}`;
+    unique.set(externalId, {
+      externalId,
+      name: referee.name,
+      sourceUrl: referee.href,
+    });
+  }
+
+  return [...unique.values()];
+}
+
+async function scrapeTopScorers(
+  page: Page,
+  season: ScrapedSeason,
+): Promise<ScrapedTopScorer[]> {
+  await page.goto(season.sourceUrl, {
+    waitUntil: 'domcontentloaded',
+    timeout: 30000,
+  });
+
+  return page.evaluate(() => {
+    const normalize = (value: string | null): string =>
+      (value ?? '').replace(/\[[^\]]+\]/g, '').replace(/\s+/g, ' ').trim();
+    const numberValue = (value: string | null): number => {
+      const match = normalize(value).match(/\d+/);
+      return match ? Number.parseInt(match[0], 10) : 0;
+    };
+    const output: ScrapedTopScorer[] = [];
+
+    for (const table of document.querySelectorAll<HTMLTableElement>('table')) {
+      const rows = Array.from(table.querySelectorAll<HTMLTableRowElement>('tr'));
+      const headerRow = rows.find((row) => {
+        const headers = Array.from(
+          row.querySelectorAll<HTMLElement>(':scope > th, :scope > td'),
+        ).map((cell) => normalize(cell.textContent).toLowerCase());
+
+        return (
+          headers.includes('player') &&
+          headers.some((header) => ['goals', 'goal'].includes(header))
+        );
+      });
+
+      if (!headerRow) continue;
+
+      const headers = Array.from(
+        headerRow.querySelectorAll<HTMLElement>(':scope > th, :scope > td'),
+      ).map((cell) => normalize(cell.textContent).toLowerCase());
+      const playerIndex = headers.indexOf('player');
+      const goalsIndex = headers.findIndex((header) =>
+        ['goals', 'goal'].includes(header),
+      );
+      const teamIndex = headers.findIndex((header) =>
+        ['team', 'club'].includes(header),
+      );
+      const rankIndex = headers.findIndex((header) =>
+        ['rank', 'pos', 'position', 'no.', 'no'].includes(header),
+      );
+
+      for (const [rowOffset, row] of rows
+        .slice(rows.indexOf(headerRow) + 1)
+        .entries()) {
+        const cells = Array.from(
+          row.querySelectorAll<HTMLElement>(':scope > th, :scope > td'),
+        );
+        const playerCell = cells[playerIndex];
+        const playerAnchor = playerCell?.querySelector<HTMLAnchorElement>(
+          'a[href*="/wiki/"]:not(.new):not(.image)',
+        );
+        const teamCell = teamIndex >= 0 ? cells[teamIndex] : undefined;
+        const teamAnchor = teamCell?.querySelector<HTMLAnchorElement>(
+          'a[href*="/wiki/"]:not(.new):not(.image)',
+        );
+        const playerName = normalize(
+          playerAnchor?.textContent ?? playerCell?.textContent ?? '',
+        );
+        const goals = numberValue(cells[goalsIndex]?.textContent ?? '');
+
+        if (!playerName || goals <= 0) continue;
+
+        output.push({
+          rank:
+            rankIndex >= 0
+              ? numberValue(cells[rankIndex]?.textContent ?? '') || rowOffset + 1
+              : rowOffset + 1,
+          goals,
+          playerName,
+          playerUrl: playerAnchor?.href,
+          teamName: normalize(
+            teamAnchor?.textContent ?? teamCell?.textContent ?? '',
+          ) || undefined,
+          teamUrl: teamAnchor?.href,
+        });
+      }
+    }
+
+    return output.filter(
+      (scorer, index, scorers) =>
+        scorers.findIndex(
+          (candidate) =>
+            (candidate.playerUrl || candidate.playerName) ===
+            (scorer.playerUrl || scorer.playerName),
+        ) === index,
+    );
+  });
+}
+
 async function scrapeClassement(
   page: Page,
   league: { name: string; sourceUrl: string },
@@ -1171,6 +1462,10 @@ async function scrapeClassement(
   };
 }
 
+/**
+ * Menyimpan master tahun 2000-2026. Tahun menggunakan nilai numerik sebagai
+ * identitas bisnis dan mempunyai _id MongoDB untuk relasi koleksi lain.
+ */
 export async function syncYears(): Promise<void> {
   syncState.phase = 'years';
   const years = Array.from({ length: 27 }, (_, index) => 2000 + index);
@@ -1195,6 +1490,10 @@ export async function syncYears(): Promise<void> {
   syncState.yearsSaved = years.length;
 }
 
+/**
+ * Menyimpan klasemen per league dan year. Team dicari lewat externalId
+ * Wikipedia, lalu relasinya disimpan memakai _id MongoDB.
+ */
 export async function syncClassement(page: Page): Promise<void> {
   syncState.phase = 'classements';
   const leagues = await LeagueModel.find({
@@ -1305,6 +1604,10 @@ export async function syncClassement(page: Page): Promise<void> {
   }
 }
 
+/**
+ * Menyimpan master negara. externalId Wikipedia dipakai untuk upsert agar
+ * proses scraping berikutnya memperbarui dokumen yang sama.
+ */
 export async function syncCountries(page: Page): Promise<void> {
   syncState.phase = 'countries';
   const countries = await scrapeCountries(page);
@@ -1331,6 +1634,10 @@ export async function syncCountries(page: Page): Promise<void> {
   }
 }
 
+/**
+ * Menyimpan stadion berdasarkan externalId dan menghubungkannya ke country
+ * serta team menggunakan _id MongoDB.
+ */
 export async function syncStadium(
   page: Page,
   team: ScrapedTeam,
@@ -1380,6 +1687,10 @@ export async function syncStadium(
   }
 }
 
+/**
+ * Menyimpan pelatih berdasarkan externalId Wikipedia dan mengisi relasi team
+ * dengan _id dokumen Team yang sudah disinkronkan.
+ */
 export async function syncCoach(
   page: Page,
   team: ScrapedTeam,
@@ -1424,6 +1735,10 @@ export async function syncCoach(
   }
 }
 
+/**
+ * Menyimpan current squad. externalId mengidentifikasi pemain dari Wikipedia,
+ * sedangkan field team menyimpan _id MongoDB dari dokumen Team.
+ */
 export async function syncPlayers(
   page: Page,
   team: ScrapedTeam,
@@ -1470,6 +1785,10 @@ export async function syncPlayers(
   }
 }
 
+/**
+ * Mengambil gambar dari halaman Wikipedia team dan memperbarui dokumen lewat
+ * _id internal tanpa membuat dokumen team baru.
+ */
 export async function syncTeamImage(
   page: Page,
   team: ScrapedTeam,
@@ -1515,6 +1834,10 @@ export async function syncTeamImage(
   }
 }
 
+/**
+ * Menyimpan team berdasarkan externalId Wikipedia dan menghubungkannya ke
+ * country serta leagues menggunakan _id MongoDB.
+ */
 export async function syncTeams(
   page: Page,
   league: ScrapedLeague,
@@ -1588,6 +1911,10 @@ export async function syncTeams(
   }
 }
 
+/**
+ * Menyimpan league berdasarkan externalId Wikipedia. Country dicari lebih
+ * dahulu, kemudian country._id disimpan sebagai relasi pada League.
+ */
 export async function syncLeagues(page: Page): Promise<void> {
   syncState.phase = 'leagues';
   const leagues = await scrapeTopLeagues(page);
@@ -1645,6 +1972,10 @@ export async function syncLeagues(page: Page): Promise<void> {
   }
 }
 
+/**
+ * Menyimpan kompetisi piala berdasarkan externalId Wikipedia dan mengisi
+ * relasi country menggunakan _id MongoDB.
+ */
 export async function syncCup(page: Page): Promise<void> {
   syncState.phase = 'cups';
 
@@ -1718,6 +2049,240 @@ export async function syncCup(page: Page): Promise<void> {
   }
 }
 
+/**
+ * Menyimpan current season untuk setiap kompetisi. Season terhubung ke salah
+ * satu league atau cup menggunakan _id MongoDB.
+ */
+export async function syncSeason(page: Page): Promise<void> {
+  syncState.phase = 'seasons';
+  const leagues = await LeagueModel.find({
+    sourceUrl: { $exists: true, $ne: '' },
+  });
+  const cups = await CupModel.find({
+    sourceUrl: { $exists: true, $ne: '' },
+  });
+
+  for (const competition of [
+    ...leagues.map((league) => ({
+      kind: 'league' as const,
+      document: league,
+    })),
+    ...cups.map((cup) => ({ kind: 'cup' as const, document: cup })),
+  ]) {
+    try {
+      const sourceUrl = competition.document.sourceUrl;
+
+      if (!sourceUrl) {
+        throw new Error('Competition source URL is not available');
+      }
+
+      const season = await scrapeCurrentSeason(page, {
+        name: competition.document.name,
+        sourceUrl,
+      });
+      const relation =
+        competition.kind === 'league'
+          ? { league: competition.document._id }
+          : { cup: competition.document._id };
+
+      await SeasonModel.updateMany(relation, {
+        $set: { isCurrent: false },
+      });
+      await SeasonModel.updateOne(
+        {
+          ...relation,
+          startYear: season.startYear,
+        },
+        {
+          $set: {
+            externalId: season.externalId,
+            name: season.name,
+            startYear: season.startYear,
+            endYear: season.endYear,
+            ...relation,
+            isCurrent: true,
+            sourceUrl: season.sourceUrl,
+            scrapedAt: new Date(),
+          },
+        },
+        { upsert: true },
+      );
+      syncState.seasonsSaved += 1;
+      console.log(
+        `[season] ${competition.document.name}: ${season.name} saved`,
+      );
+    } catch (error) {
+      syncState.seasonPagesFailed += 1;
+      console.error(
+        `[season] Failed to synchronize ${competition.document.name}:`,
+        error instanceof Error ? error.message : error,
+      );
+    }
+
+    await new Promise((resolve) => setTimeout(resolve, 300));
+  }
+}
+
+/**
+ * Menyimpan master wasit yang ditemukan pada halaman season. externalId
+ * Wikipedia mencegah wasit yang sama dibuat berulang kali.
+ */
+export async function syncReferee(page: Page): Promise<void> {
+  syncState.phase = 'referees';
+  const seasons = await SeasonModel.find();
+
+  for (const seasonDocument of seasons) {
+    const season: ScrapedSeason = {
+      externalId: seasonDocument.externalId,
+      name: seasonDocument.name,
+      startYear: seasonDocument.startYear,
+      endYear: seasonDocument.endYear,
+      sourceUrl: seasonDocument.sourceUrl,
+    };
+
+    try {
+      const referees = await scrapeReferees(page, season);
+
+      if (referees.length > 0) {
+        await RefereeModel.bulkWrite(
+          referees.map((referee) => ({
+            updateOne: {
+              filter: { externalId: referee.externalId },
+              update: {
+                $set: {
+                  name: referee.name,
+                  imageUrl: null,
+                  mobileImageUrl: null,
+                  sourceUrl: referee.sourceUrl,
+                  scrapedAt: new Date(),
+                },
+              },
+              upsert: true,
+            },
+          })),
+        );
+        syncState.refereesSaved += referees.length;
+      }
+      console.log(
+        `[referee] ${season.name}: ${referees.length} referees saved`,
+      );
+    } catch (error) {
+      syncState.refereePagesFailed += 1;
+      console.error(
+        `[referee] Failed to synchronize ${season.name}:`,
+        error instanceof Error ? error.message : error,
+      );
+    }
+
+    await new Promise((resolve) => setTimeout(resolve, 300));
+  }
+}
+
+/**
+ * Menyimpan top scorer per season. Player dan team dicocokkan lewat externalId,
+ * lalu _id player, team, season, dan league/cup disimpan sebagai relasi.
+ */
+export async function syncTopScorer(page: Page): Promise<void> {
+  syncState.phase = 'topScorers';
+  const seasons = await SeasonModel.find();
+  const players = await PlayerModel.find();
+  const teams = await TeamModel.find();
+  const playersByExternalId = new Map(
+    players.map((player) => [player.externalId, player]),
+  );
+  const playersByName = new Map(
+    players.map((player) => [player.name.toLowerCase(), player]),
+  );
+  const teamsByExternalId = new Map(
+    teams.map((team) => [team.externalId, team]),
+  );
+  const teamsByName = new Map(
+    teams.map((team) => [team.name.toLowerCase(), team]),
+  );
+
+  for (const seasonDocument of seasons) {
+    const season: ScrapedSeason = {
+      externalId: seasonDocument.externalId,
+      name: seasonDocument.name,
+      startYear: seasonDocument.startYear,
+      endYear: seasonDocument.endYear,
+      sourceUrl: seasonDocument.sourceUrl,
+    };
+
+    try {
+      const scorers = await scrapeTopScorers(page, season);
+
+      for (const scorer of scorers) {
+        // externalId menghubungkan hasil Wikipedia dengan dokumen master yang
+        // sudah ada tanpa bergantung pada nama yang dapat berubah.
+        const playerExternalId = scorer.playerUrl
+          ? wikipediaExternalId(scorer.playerUrl, season.sourceUrl)
+          : undefined;
+        const player =
+          (playerExternalId
+            ? playersByExternalId.get(playerExternalId)
+            : undefined) ?? playersByName.get(scorer.playerName.toLowerCase());
+
+        if (!player) {
+          syncState.topScorerPlayersMissing += 1;
+          console.log(
+            `[top-scorer] ${season.name}: player ${scorer.playerName} is not in players`,
+          );
+          continue;
+        }
+
+        const teamExternalId = scorer.teamUrl
+          ? wikipediaExternalId(scorer.teamUrl, season.sourceUrl)
+          : undefined;
+        const team =
+          (teamExternalId
+            ? teamsByExternalId.get(teamExternalId)
+            : undefined) ??
+          (scorer.teamName
+            ? teamsByName.get(scorer.teamName.toLowerCase())
+            : undefined);
+        const relation = seasonDocument.league
+          ? { league: seasonDocument.league }
+          : { cup: seasonDocument.cup };
+
+        await TopScorerModel.updateOne(
+          {
+            season: seasonDocument._id,
+            player: player._id,
+          },
+          {
+            $set: {
+              externalId: `${season.externalId}:${player.externalId}`,
+              rank: scorer.rank,
+              goals: scorer.goals,
+              // Relasi disimpan sebagai _id MongoDB agar dapat di-populate.
+              player: player._id,
+              team: team?._id,
+              season: seasonDocument._id,
+              ...relation,
+              sourceUrl: season.sourceUrl,
+              scrapedAt: new Date(),
+            },
+          },
+          { upsert: true },
+        );
+        syncState.topScorersSaved += 1;
+      }
+      console.log(
+        `[top-scorer] ${season.name}: ${scorers.length} rows found`,
+      );
+    } catch (error) {
+      syncState.topScorerPagesFailed += 1;
+      console.error(
+        `[top-scorer] Failed to synchronize ${season.name}:`,
+        error instanceof Error ? error.message : error,
+      );
+    }
+
+    await new Promise((resolve) => setTimeout(resolve, 300));
+  }
+}
+
 async function runWikipediaMasterSync(): Promise<void> {
   const { default: puppeteer } = await import('puppeteer');
   const browser = await puppeteer.launch({
@@ -1733,7 +2298,10 @@ async function runWikipediaMasterSync(): Promise<void> {
     await syncCountries(page);
     await syncLeagues(page);
     await syncCup(page);
+    await syncSeason(page);
     await syncClassement(page);
+    await syncTopScorer(page);
+    await syncReferee(page);
 
     syncState.status = 'completed';
     syncState.phase = 'completed';

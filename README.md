@@ -1,7 +1,7 @@
 # Soccer Scrapper
 
-Backend data sepak bola menggunakan Node.js, Express, TypeScript, MongoDB, dan
-Mongoose.
+Backend sinkronisasi data master sepak bola dari Wikipedia menggunakan
+Node.js, Express, TypeScript, Puppeteer, MongoDB, dan Mongoose.
 
 ## Struktur Proyek
 
@@ -12,23 +12,34 @@ soccer-scrapper/
 │   ├── db/
 │   │   └── db.ts
 │   ├── interfaces/
+│   │   ├── classement.interface.ts
+│   │   ├── coach.interface.ts
 │   │   ├── country.interface.ts
+│   │   ├── cup.interface.ts
+│   │   ├── image.interface.ts
 │   │   ├── league.interface.ts
-│   │   ├── live.interface.ts
-│   │   ├── match.interface.ts
-│   │   ├── odds.interface.ts
-│   │   ├── schedule.interface.ts
-│   │   └── team.interface.ts
-│   ├── middlewares/
+│   │   ├── player.interface.ts
+│   │   ├── referee.interface.ts
+│   │   ├── season.interface.ts
+│   │   ├── stadium.interface.ts
+│   │   ├── team.interface.ts
+│   │   ├── top-scorer.interface.ts
+│   │   └── year.interface.ts
 │   ├── models/
+│   │   ├── classement.ts
+│   │   ├── coach.ts
 │   │   ├── country.ts
+│   │   ├── cup.ts
 │   │   ├── league.ts
-│   │   ├── live.ts
-│   │   ├── match.ts
-│   │   ├── odds.ts
-│   │   ├── schedule.ts
-│   │   └── team.ts
-│   ├── routes/
+│   │   ├── player.ts
+│   │   ├── referee.ts
+│   │   ├── season.ts
+│   │   ├── stadium.ts
+│   │   ├── team.ts
+│   │   ├── top-scorer.ts
+│   │   └── year.ts
+│   ├── services/
+│   │   └── wikipedia-master.service.ts
 │   ├── app.ts
 │   └── server.ts
 ├── .env
@@ -36,252 +47,73 @@ soccer-scrapper/
 └── tsconfig.json
 ```
 
-Pembagian tanggung jawab:
-
 | Folder | Tanggung jawab |
 | --- | --- |
 | `interfaces` | Mendefinisikan bentuk data TypeScript |
-| `models` | Mendefinisikan Mongoose schema, index, dan model |
+| `models` | Mendefinisikan schema, index, reference, dan model Mongoose |
+| `services` | Mengambil data Wikipedia dan menyinkronkannya ke MongoDB |
 | `db` | Mengelola koneksi MongoDB |
-| `routes` | Mendefinisikan endpoint Express |
-| `controllers` | Menangani request dan response |
-| `middlewares` | Menangani proses lintas endpoint seperti error |
+| `controllers` | Menangani request dan response HTTP jika diaktifkan |
+| `routes` | Mendefinisikan endpoint Express jika diaktifkan |
 
 ## Instalasi
-
-Masuk ke folder proyek dan pasang dependency:
 
 ```bash
 cd soccer-scrapper
 npm install
 ```
 
-Development dependency TypeScript:
+Dependency runtime utama:
+
+```bash
+npm install express cors dotenv mongoose puppeteer
+```
+
+Dependency development TypeScript:
 
 ```bash
 npm install -D typescript tsx @types/node @types/express @types/cors
 ```
 
-Runtime dependency database:
+Mongoose membawa tipe TypeScript sendiri sehingga `@types/mongoose` tidak
+diperlukan. Opsi `-D` berarti `--save-dev`, bukan instalasi global.
 
-```bash
-npm install mongoose
+## Konfigurasi MongoDB
+
+Buat `.env` di root proyek:
+
+```dotenv
+PORT=3000
+MONGODB_URI=mongodb://admin:change-this-password@localhost:27017/gosoccer?authSource=admin
+PUPPETEER_HEADLESS=true
 ```
 
-Mongoose sudah membawa tipe TypeScript sendiri. Jangan memasang
-`@types/mongoose`.
-
-Opsi `-D` berarti `--save-dev`, bukan global. Package development dipasang
-secara lokal dan dicatat pada `devDependencies`.
-
-## Flow JavaScript ke TypeScript
+Format MongoDB URI:
 
 ```text
-Instal TypeScript dan type definitions
-                  ↓
-          Buat tsconfig.json
-                  ↓
-       Ubah file .js menjadi .ts
-                  ↓
-      Ubah require menjadi import
-                  ↓
- Ubah module.exports menjadi export
-                  ↓
-   Pisahkan interface dari implementasi
-                  ↓
- Tambahkan tipe parameter dan hasil fungsi
-                  ↓
-       Perbarui script package.json
-                  ↓
-          Jalankan typecheck
-                  ↓
-      Build TypeScript ke JavaScript
-                  ↓
-       Jalankan JavaScript dari dist
+mongodb://username:password@hostname:port/database?authSource=admin
 ```
 
-### 1. Instal TypeScript
+Jangan menambahkan `http://` pada URI MongoDB dan jangan menyimpan kredensial
+langsung di source code. `.env` harus dicantumkan pada `.gitignore`.
 
-`typescript` digunakan untuk pemeriksaan tipe dan build. `tsx` menjalankan
-source TypeScript secara langsung saat development.
-
-```bash
-npm install -D typescript tsx @types/node @types/express @types/cors
-```
-
-### 2. Konfigurasi TypeScript
-
-`tsconfig.json` mengatur source, output build, module system, dan pemeriksaan
-tipe:
-
-```json
-{
-  "compilerOptions": {
-    "target": "ES2022",
-    "module": "Node16",
-    "moduleResolution": "Node16",
-    "rootDir": "src",
-    "outDir": "dist",
-    "strict": true,
-    "esModuleInterop": true,
-    "forceConsistentCasingInFileNames": true,
-    "skipLibCheck": true
-  },
-  "include": ["src/**/*.ts"],
-  "exclude": ["node_modules", "dist"]
-}
-```
-
-`Node16` digunakan karena `moduleResolution: "Node"` adalah mode lama yang
-dipetakan ke `node10` dan telah deprecated.
-
-### 3. Ubah Ekstensi Source
-
-```text
-server.js → server.ts
-app.js    → app.ts
-```
-
-Hapus file `.js` lama setelah migrasi. Menyimpan `.js` dan `.ts` dengan nama
-modul yang sama dapat membuat resolver memilih file yang tidak diharapkan.
-
-### 4. Ubah Import dan Export
-
-JavaScript CommonJS:
-
-```js
-const express = require('express');
-module.exports = app;
-```
-
-TypeScript:
+Koneksi dibuat satu kali sebelum server dan sinkronisasi dijalankan:
 
 ```ts
-import express from 'express';
-export default app;
-```
+export async function connectDatabase(): Promise<void> {
+  const uri = process.env.MONGODB_URI;
 
-Named export harus memakai named import:
-
-```ts
-export const MatchModel = model('Match', matchSchema);
-```
-
-```ts
-import { MatchModel } from './models/match';
-```
-
-Untuk nilai yang hanya diperlukan oleh compiler, gunakan `import type`:
-
-```ts
-import type { Match } from '../interfaces/match.interface';
-```
-
-### 5. Pisahkan Interface dan Model
-
-Interface mendeskripsikan bentuk data:
-
-```ts
-// src/interfaces/match.interface.ts
-import type { Types } from 'mongoose';
-
-export interface Match {
-  externalId: string;
-  league: Types.ObjectId;
-  homeTeam: Types.ObjectId;
-  awayTeam: Types.ObjectId;
-  kickoffAt: Date;
-}
-```
-
-Model mendeskripsikan aturan MongoDB:
-
-```ts
-// src/models/match.ts
-import { model, Schema, Types } from 'mongoose';
-import type { Match } from '../interfaces/match.interface';
-
-const matchSchema = new Schema<Match>({
-  externalId: {
-    type: String,
-    required: true,
-  },
-  league: {
-    type: Types.ObjectId,
-    ref: 'League',
-    required: true,
-  },
-  homeTeam: {
-    type: Types.ObjectId,
-    ref: 'Team',
-    required: true,
-  },
-  awayTeam: {
-    type: Types.ObjectId,
-    ref: 'Team',
-    required: true,
-  },
-  kickoffAt: {
-    type: Date,
-    required: true,
-  },
-});
-
-export const MatchModel = model<Match>('Match', matchSchema);
-```
-
-Interface hanya ada saat pemeriksaan TypeScript. Model tersedia saat runtime
-dan digunakan untuk berkomunikasi dengan MongoDB.
-
-### 6. Perbarui Script
-
-Konfigurasi yang direkomendasikan:
-
-```json
-{
-  "main": "dist/server.js",
-  "scripts": {
-    "dev": "tsx watch src/server.ts",
-    "typecheck": "tsc --noEmit",
-    "build": "tsc",
-    "start": "node dist/server.js"
+  if (!uri) {
+    throw new Error('MONGODB_URI is not defined');
   }
+
+  await mongoose.connect(uri);
 }
-```
-
-### 7. Typecheck dan Build
-
-Periksa tipe tanpa membuat file:
-
-```bash
-npm run typecheck
-```
-
-Build TypeScript menjadi JavaScript:
-
-```bash
-npm run build
-```
-
-Jalankan hasil build:
-
-```bash
-npm start
-```
-
-Flow production:
-
-```text
-src/*.ts
-   ↓ tsc
-dist/*.js
-   ↓ node
-dist/server.js
 ```
 
 ## MongoDB dengan Docker
 
-Gunakan Docker Compose agar database dapat dijalankan secara konsisten.
+Contoh `compose.yaml`:
 
 ```yaml
 services:
@@ -302,282 +134,309 @@ volumes:
   mongodb_data:
 ```
 
-Jalankan MongoDB:
+Perintah Docker:
 
 ```bash
 docker compose up -d
-```
-
-Cek status:
-
-```bash
 docker compose ps
-```
-
-Lihat log:
-
-```bash
 docker compose logs -f mongodb
-```
-
-Hentikan tanpa menghapus data:
-
-```bash
 docker compose down
 ```
 
-Perintah berikut juga menghapus volume dan seluruh data:
+`docker compose down -v` juga menghapus volume dan seluruh data MongoDB.
+
+## Menjalankan Aplikasi
+
+Development:
 
 ```bash
-docker compose down -v
+npm run dev
 ```
 
-## Environment Variable
-
-`process.env` merupakan fitur Node.js dan tidak perlu dipasang. Package
-`dotenv` digunakan untuk memuat isi `.env`.
-
-Buat `.env` di root `soccer-scrapper`:
-
-```dotenv
-PORT=3000
-MONGODB_URI=mongodb://admin:change-this-password@localhost:27017/gosoccer?authSource=admin
-```
-
-Muat environment paling awal:
-
-```ts
-import 'dotenv/config';
-```
-
-Jangan menulis username dan password database langsung di source. File `.env`
-harus tercantum di `.gitignore`.
-
-Struktur MongoDB URI:
+Server menjalankan proses berikut:
 
 ```text
-mongodb://username:password@hostname:port/database?authSource=admin
-```
-
-Port dipisahkan dengan `:`, bukan `/`, dan URI tidak menggunakan `http://`.
-
-## Koneksi Database
-
-Koneksi dibuat satu kali di `src/db/db.ts`:
-
-```ts
-import mongoose from 'mongoose';
-
-export async function connectDatabase(): Promise<void> {
-  const uri = process.env.MONGODB_URI;
-
-  if (!uri) {
-    throw new Error('MONGODB_URI is not defined');
-  }
-
-  await mongoose.connect(uri);
-  console.log('MongoDB connected');
-}
-```
-
-Database harus terhubung sebelum Express membuka port:
-
-```ts
-import 'dotenv/config';
-
-import app from './app';
-import { connectDatabase } from './db/db';
-
-const port = Number(process.env.PORT) || 3000;
-
-async function startServer(): Promise<void> {
-  try {
-    await connectDatabase();
-
-    app.listen(port, () => {
-      console.log(`Server running at http://localhost:${port}`);
-    });
-  } catch (error) {
-    console.error('Failed to start server:', error);
-    process.exit(1);
-  }
-}
-
-void startServer();
-```
-
-Flow startup:
-
-```text
-server.ts membaca .env
-          ↓
-connectDatabase membaca MONGODB_URI
-          ↓
-Mongoose terhubung ke MongoDB
-          ↓
+Membaca environment variable
+              ↓
+Menghubungkan Mongoose ke MongoDB
+              ↓
+Menjalankan sinkronisasi Wikipedia
+              ↓
 Express membuka port HTTP
 ```
 
-Jangan membuka koneksi baru dari controller untuk setiap request.
+Puppeteer ditutup melalui blok `finally` setelah seluruh pipeline selesai.
+Ketika proses menerima `SIGINT` atau `SIGTERM`, browser aktif juga ditutup.
+
+## Flow Sinkronisasi
+
+```text
+syncYears
+    ↓
+syncCountries
+    ↓
+syncLeagues
+    ↓
+syncTeams
+    ├── syncTeamImage
+    ├── syncStadium
+    ├── syncCoach
+    └── syncPlayers
+    ↓
+syncCup
+    ↓
+syncSeason
+    ↓
+syncClassement
+    ↓
+syncTopScorer
+    ↓
+syncReferee
+```
+
+### 1. Tahun
+
+`syncYears()` membuat master tahun dari 2000 sampai 2026 menggunakan upsert.
+Nilai tahun digunakan sebagai identitas bisnis, sedangkan MongoDB tetap
+memberikan `_id` pada setiap dokumen.
+
+### 2. Negara
+
+`syncCountries()` mengambil daftar negara. `externalId` Wikipedia digunakan
+untuk mengenali dokumen yang sama ketika sinkronisasi dijalankan ulang.
+
+### 3. Liga
+
+`syncLeagues()` menyimpan liga dan mencari negara terkait terlebih dahulu.
+Field `country` pada dokumen liga berisi `country._id`.
+
+### 4. Tim dan Data Tim
+
+`syncTeams()` menyimpan tim berdasarkan `externalId`, lalu menghubungkannya ke
+country dan league melalui `_id` MongoDB. Setiap tim dilanjutkan ke:
+
+- `syncTeamImage()` untuk URL gambar tim.
+- `syncStadium()` untuk stadion dan relasi team/country.
+- `syncCoach()` untuk pelatih dan relasi team.
+- `syncPlayers()` untuk current squad dan relasi team.
+
+Gambar pemain tidak diunduh dan nilainya disimpan sebagai `null`.
+
+### 5. Cup
+
+`syncCup()` menyimpan kompetisi piala. Cup terhubung ke country menggunakan
+`country._id`.
+
+### 6. Season
+
+`syncSeason()` mencari current season setiap league atau cup. Season hanya
+memiliki salah satu relasi:
+
+```text
+Season → League
+atau
+Season → Cup
+```
+
+Season sebelumnya pada kompetisi yang sama ditandai `isCurrent: false`.
+
+### 7. Classement
+
+`syncClassement()` menyimpan posisi klasemen berdasarkan league dan year.
+Setiap baris klasemen menyimpan `_id` team, league, dan year terkait.
+
+### 8. Top Scorer
+
+`syncTopScorer()` membaca tabel pencetak gol pada halaman season. Player dan
+team dicari menggunakan `externalId` Wikipedia, kemudian `_id` dokumennya
+disimpan sebagai relasi.
+
+Top scorer liga menyimpan `league`, sedangkan top scorer kompetisi piala
+menyimpan `cup`. Player yang belum ada pada koleksi `players` dilewati agar
+tidak menghasilkan relasi palsu.
+
+### 9. Referee
+
+`syncReferee()` menyimpan master wasit yang ditemukan pada halaman season.
+Wasit di-upsert berdasarkan `externalId`. Ketersediaan data wasit bergantung
+pada struktur dan isi halaman Wikipedia.
 
 ## Model dan Relasi
 
-Model yang tersedia:
-
-| Model | Fungsi |
+| Model | Fungsi dan relasi utama |
 | --- | --- |
-| `Country` | Negara asal liga atau tim |
-| `League` | Kompetisi sepak bola |
-| `Team` | Klub atau tim |
-| `Match` | Data utama pertandingan |
-| `Schedule` | Informasi jadwal pertandingan |
-| `LiveMatch` | Kondisi pertandingan yang sedang berjalan |
-| `Odds` | Pasar dan nilai odds pertandingan |
+| `Country` | Master negara |
+| `League` | Kompetisi liga, memiliki `country` |
+| `Cup` | Kompetisi piala, memiliki `country` |
+| `Team` | Tim, memiliki `country` dan `leagues[]` |
+| `Player` | Pemain, memiliki `team` |
+| `Coach` | Pelatih, memiliki `team` |
+| `Stadium` | Stadion, memiliki `country` dan `teams[]` |
+| `Year` | Master tahun 2000-2026 |
+| `Season` | Musim milik satu `league` atau `cup` |
+| `Classement` | Posisi team berdasarkan `league` dan `year` |
+| `TopScorer` | Pencetak gol berdasarkan player, team, season, dan kompetisi |
+| `Referee` | Master wasit |
 
-Relasi disimpan sebagai `ObjectId` dan ditentukan melalui `ref`:
+Relasi utama:
 
 ```text
-Country 1 ─── N League
-Country 1 ─── N Team
-League  1 ─── N Match
-Team    1 ─── N Match
-Match   1 ─── 1 Schedule
-Match   1 ─── 1 LiveMatch
-Match   1 ─── N Odds
+Country  1 ─── N League
+Country  1 ─── N Cup
+Country  1 ─── N Team
+Country  1 ─── N Stadium
+League   N ─── N Team
+Team     1 ─── N Player
+Team     1 ─── N Coach
+Team     N ─── N Stadium
+League   1 ─── N Season
+Cup      1 ─── N Season
+League   1 ─── N Classement
+Season   1 ─── N TopScorer
+Player   1 ─── N TopScorer
+Team     1 ─── N TopScorer
 ```
 
-Contoh relasi:
+## externalId dan ObjectId
+
+`externalId` dan `_id` mempunyai fungsi berbeda:
+
+- `externalId` berasal dari Wikipedia dan digunakan untuk pencarian, upsert,
+  serta deduplikasi.
+- `_id` dibuat MongoDB dan digunakan sebagai relasi antardokumen.
+- `ref` memberi tahu Mongoose model tujuan ketika menggunakan `populate()`.
+
+Contoh alur relasi top scorer:
+
+```text
+URL pemain Wikipedia
+          ↓
+Ubah menjadi externalId
+          ↓
+PlayerModel.findOne({ externalId })
+          ↓
+Ambil player._id
+          ↓
+Simpan ke TopScorer.player
+```
+
+Contoh interface:
 
 ```ts
-league: {
-  type: Types.ObjectId,
-  ref: 'League',
-  required: true,
+export interface TopScorer {
+  externalId: string;
+  rank: number;
+  goals: number;
+  player: Types.ObjectId;
+  team?: Types.ObjectId;
+  season: Types.ObjectId;
+  league?: Types.ObjectId;
+  cup?: Types.ObjectId;
+  sourceUrl: string;
+  scrapedAt: Date;
 }
 ```
 
-- `Types.ObjectId` adalah `_id` yang disimpan pada dokumen.
-- `ref: 'League'` menunjukkan model tujuan.
-- Nilai `ref` harus sama dengan nama pada `model('League', ...)`.
-
-Ambil dokumen beserta relasinya menggunakan `populate()`:
+Contoh penyimpanan:
 
 ```ts
-const match = await MatchModel.findById(matchId)
-  .populate('league')
-  .populate('homeTeam')
-  .populate('awayTeam');
-```
+const player = await PlayerModel.findOne({
+  externalId: 'wikipedia:Erling_Haaland',
+});
 
-Tanpa `populate`, field relasi hanya berisi `ObjectId`. MongoDB tidak memiliki
-foreign key constraint seperti SQL, sehingga aplikasi tetap perlu menjaga
-validitas relasi.
+const team = await TeamModel.findOne({
+  externalId: 'wikipedia:Manchester_City_F.C.',
+});
 
-## Membuat Data Awal
-
-Gunakan upsert agar startup berulang tidak membuat dokumen duplikat:
-
-```ts
-await CountryModel.updateOne(
-  { externalId: 'ID' },
+await TopScorerModel.updateOne(
   {
-    $setOnInsert: {
-      externalId: 'ID',
-      name: 'Indonesia',
-      code: 'ID',
+    season: season._id,
+    player: player._id,
+  },
+  {
+    $set: {
+      externalId: `${season.externalId}:${player.externalId}`,
+      rank: 1,
+      goals: 25,
+      player: player._id,
+      team: team._id,
+      season: season._id,
+      league: league._id,
+      sourceUrl: season.sourceUrl,
+      scrapedAt: new Date(),
     },
   },
-  {
-    upsert: true,
-  },
+  { upsert: true },
 );
 ```
 
-Flow:
-
-```text
-Hubungkan MongoDB
-        ↓
-Jalankan seed dengan upsert
-        ↓
-Buat dokumen hanya jika belum ada
-        ↓
-Jalankan Express
-```
-
-Hindari `Model.create()` pada setiap startup jika dokumen harus unik.
-
-## Penyimpanan Gambar
-
-Untuk tahap awal, simpan URL gambar pada MongoDB:
+Contoh membaca relasi:
 
 ```ts
-logoUrl?: string;
-flagUrl?: string;
+const scorers = await TopScorerModel.find({
+  season: seasonId,
+  league: leagueId,
+})
+  .sort({ rank: 1 })
+  .populate('player')
+  .populate('team')
+  .populate('season')
+  .populate('league')
+  .populate('cup');
 ```
 
-Object storage seperti MinIO belum diperlukan jika aplikasi hanya menggunakan
-URL logo dari sumber.
+Tanpa `populate()`, field relasi hanya berisi ObjectId.
 
-Gunakan MinIO atau object storage kompatibel S3 ketika:
-
-- Sistem perlu memiliki salinan gambarnya sendiri.
-- URL sumber tidak boleh menjadi ketergantungan.
-- File harus dikelola, dibatasi aksesnya, atau disajikan dari storage sendiri.
-
-Jika object storage digunakan, MongoDB hanya menyimpan metadata:
-
-```ts
-export interface ImageAsset {
-  bucket: string;
-  objectKey: string;
-  contentType: string;
-  size: number;
-  publicUrl?: string;
-}
-```
-
-Flow penyimpanan:
+## Flow JavaScript ke TypeScript
 
 ```text
-Terima atau unduh file
-        ↓
-Upload binary ke object storage
-        ↓
-Simpan objectKey dan metadata di MongoDB
+Instal TypeScript dan type definitions
+                  ↓
+Buat tsconfig.json
+                  ↓
+Ubah file .js menjadi .ts
+                  ↓
+Ubah require menjadi import
+                  ↓
+Ubah module.exports menjadi export
+                  ↓
+Pisahkan interface dari model
+                  ↓
+Tambahkan tipe parameter dan hasil fungsi
+                  ↓
+Perbarui script package.json
+                  ↓
+Jalankan typecheck
+                  ↓
+Build TypeScript ke JavaScript
+                  ↓
+Jalankan JavaScript dari dist
 ```
 
-Jangan menyimpan binary gambar langsung dalam model utama. GridFS tersedia
-untuk kebutuhan file di MongoDB, tetapi object storage biasanya lebih sesuai
-untuk aset gambar aplikasi.
+### Typecheck
 
-## Debug di Cursor
-
-Cursor menggunakan debugger yang kompatibel dengan VS Code. Buat
-`.vscode/launch.json` di root workspace:
-
-```json
-{
-  "version": "0.2.0",
-  "configurations": [
-    {
-      "name": "Debug Soccer Scrapper",
-      "type": "node",
-      "request": "launch",
-      "runtimeExecutable": "${workspaceFolder}/soccer-scrapper/node_modules/.bin/tsx",
-      "program": "${workspaceFolder}/soccer-scrapper/src/server.ts",
-      "cwd": "${workspaceFolder}/soccer-scrapper",
-      "envFile": "${workspaceFolder}/soccer-scrapper/.env",
-      "console": "integratedTerminal",
-      "internalConsoleOptions": "neverOpen",
-      "skipFiles": [
-        "<node_internals>/**",
-        "${workspaceFolder}/soccer-scrapper/node_modules/**"
-      ]
-    }
-  ]
-}
+```bash
+npx tsc --noEmit
 ```
 
-Pasang breakpoint di sebelah nomor baris, buka **Run and Debug**, pilih
-**Debug Soccer Scrapper**, lalu tekan `F5`.
+### Build
+
+```bash
+npx tsc
+node dist/server.js
+```
+
+`tsx` digunakan saat development agar source `.ts` dapat dijalankan langsung.
+Untuk production, TypeScript dibangun menjadi JavaScript pada folder `dist`.
+
+## Catatan Scraping
+
+- Target Wikipedia disimpan di source code, bukan query parameter.
+- Selector Wikipedia dapat berubah sehingga setiap parser memiliki logging dan
+  counter kegagalan.
+- Tidak semua liga memiliki tabel klasemen, top scorer, current squad, atau
+  referee dengan struktur yang sama.
+- Gunakan jeda antarhalaman dan jangan menjalankan sinkronisasi paralel secara
+  agresif.
+- URL gambar disimpan apa adanya; file gambar tidak diunduh ke MongoDB.
+- Hormati kebijakan, robots.txt, dan beban server sumber.
