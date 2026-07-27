@@ -153,6 +153,47 @@ Development:
 npm run dev
 ```
 
+Menjalankan satu jenis sinkronisasi:
+
+```bash
+npm run dev -- --sync=player
+```
+
+Format dengan spasi juga didukung:
+
+```bash
+npm run dev -- --sync player
+```
+
+Shorthand berikut menghasilkan proses yang sama:
+
+```bash
+npm run dev -- --player
+```
+
+Target yang tersedia:
+
+```text
+year
+country
+league
+cup
+team
+player
+coach
+stadium
+season
+classement
+top-scorer
+referee
+```
+
+Nama plural juga diterima, misalnya `--sync=players` atau
+`--sync=top-scorers`. Target `team`, `player`, `coach`, dan `stadium` membaca
+relasi yang sudah tersedia di MongoDB lalu hanya menjalankan sinkronisasi
+pilihan tersebut. Jika flag tidak diberikan, seluruh sync tetap dijalankan
+berdasarkan prioritas jumlah dokumen.
+
 Server menjalankan proses berikut:
 
 ```text
@@ -171,28 +212,35 @@ Ketika proses menerima `SIGINT` atau `SIGTERM`, browser aktif juga ditutup.
 ## Flow Sinkronisasi
 
 ```text
-syncYears
-    ↓
-syncCountries
-    ↓
-syncLeagues
-    ↓
-syncTeams
-    ├── syncTeamImage
-    ├── syncStadium
-    ├── syncCoach
-    └── syncPlayers
-    ↓
-syncCup
-    ↓
-syncSeason
-    ↓
-syncClassement
-    ↓
-syncTopScorer
-    ↓
-syncReferee
+Hitung jumlah dokumen setiap koleksi
+                    ↓
+Urutkan dari jumlah paling sedikit
+                    ↓
+Jalankan setiap sync secara berurutan
 ```
+
+Urutan dihitung saat proses dimulai untuk `Year`, `Country`, `League`, `Cup`,
+`Season`, `Classement`, `TopScorer`, dan `Referee`. Contoh log:
+
+```text
+[sync-priority] topScorers=3 -> referees=8 -> cups=25 -> seasons=40
+```
+
+Jika jumlah dua koleksi sama, urutan deklarasi yang menjaga relasi digunakan
+sebagai tie-breaker. `syncTeams`, `syncTeamImage`, `syncStadium`, `syncCoach`,
+dan `syncPlayers` tetap dijalankan sebagai bagian dari `syncLeagues` karena
+fungsi tersebut membutuhkan ID country, league, dan team.
+
+Sebelum task dijalankan, service memeriksa dokumen relasi yang dibutuhkan. Task
+yang dependency-nya belum tersedia dilewati tanpa menggagalkan pipeline:
+
+```text
+[sync-priority] Skipped topScorers: Season atau Team belum tersedia
+```
+
+Jalankan aplikasi kembali untuk menghitung urutan baru dan memproses task yang
+sebelumnya dilewati. Urutan terpilih tersedia pada `syncState.priorityOrder`,
+sedangkan task yang dilewati tersedia pada `syncState.skippedSyncs`.
 
 ### 1. Tahun
 
@@ -252,8 +300,9 @@ team dicari menggunakan `externalId` Wikipedia, kemudian `_id` dokumennya
 disimpan sebagai relasi.
 
 Top scorer liga menyimpan `league`, sedangkan top scorer kompetisi piala
-menyimpan `cup`. Player yang belum ada pada koleksi `players` dilewati agar
-tidak menghasilkan relasi palsu.
+menyimpan `cup`. Jika player belum tersedia, sinkronisasi membuat dokumen
+Player dari baris top scorer selama team terkait berhasil ditemukan. Player
+hanya dilewati jika relasi team juga tidak tersedia.
 
 ### 9. Referee
 

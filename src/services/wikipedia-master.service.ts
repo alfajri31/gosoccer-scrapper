@@ -168,13 +168,47 @@ export interface WikipediaSyncState {
   topScorersSaved: number;
   topScorerPagesFailed: number;
   topScorerPlayersMissing: number;
+  topScorerPlayersCreated: number;
+  topScorerTeamsMissing: number;
   classementsSaved: number;
   classementPagesFailed: number;
   classementTeamsMissing: number;
+  priorityOrder: Array<{ name: string; documentCount: number }>;
+  skippedSyncs: Array<{ name: string; reason: string }>;
+  selectedSync?: string;
   startedAt?: string;
   finishedAt?: string;
   error?: string;
 }
+
+const SYNC_TARGET_ALIASES: Record<string, string> = {
+  year: 'years',
+  years: 'years',
+  country: 'countries',
+  countries: 'countries',
+  league: 'leagues',
+  leagues: 'leagues',
+  cup: 'cups',
+  cups: 'cups',
+  team: 'teams',
+  teams: 'teams',
+  player: 'players',
+  players: 'players',
+  coach: 'coaches',
+  coaches: 'coaches',
+  stadium: 'stadiums',
+  stadiums: 'stadiums',
+  season: 'seasons',
+  seasons: 'seasons',
+  classement: 'classements',
+  classements: 'classements',
+  topscorer: 'topScorers',
+  topscorers: 'topScorers',
+  'top-scorer': 'topScorers',
+  'top-scorers': 'topScorers',
+  referee: 'referees',
+  referees: 'referees',
+};
 
 const activeBrowsers = new Set<Browser>();
 let isShuttingDown = false;
@@ -209,9 +243,13 @@ function createIdleState(): WikipediaSyncState {
     topScorersSaved: 0,
     topScorerPagesFailed: 0,
     topScorerPlayersMissing: 0,
+    topScorerPlayersCreated: 0,
+    topScorerTeamsMissing: 0,
     classementsSaved: 0,
     classementPagesFailed: 0,
     classementTeamsMissing: 0,
+    priorityOrder: [],
+    skippedSyncs: [],
   };
 }
 
@@ -1204,9 +1242,29 @@ async function scrapeTopScorers(
   return page.evaluate(() => {
     const normalize = (value: string | null): string =>
       (value ?? '').replace(/\[[^\]]+\]/g, '').replace(/\s+/g, ' ').trim();
+    const normalizedHeader = (value: string | null): string =>
+      normalize(value)
+        .toLowerCase()
+        .replace(/\([^)]*\)/g, '')
+        .replace(/[.:#]/g, '')
+        .replace(/\s+/g, ' ')
+        .trim();
     const numberValue = (value: string | null): number => {
       const match = normalize(value).match(/\d+/);
       return match ? Number.parseInt(match[0], 10) : 0;
+    };
+    const aliases = {
+      player: [
+        'player',
+        'players',
+        'player name',
+        'name',
+        'goalscorer',
+        'goalscorers',
+      ],
+      goals: ['goal', 'goals', 'goals scored', 'total goals', 'total'],
+      team: ['team', 'teams', 'club', 'clubs'],
+      rank: ['rank', 'ranking', 'pos', 'position', 'no', '#'],
     };
     const output: ScrapedTopScorer[] = [];
 
@@ -1214,12 +1272,12 @@ async function scrapeTopScorers(
       const rows = Array.from(table.querySelectorAll<HTMLTableRowElement>('tr'));
       const headerRow = rows.find((row) => {
         const headers = Array.from(
-          row.querySelectorAll<HTMLElement>(':scope > th, :scope > td'),
-        ).map((cell) => normalize(cell.textContent).toLowerCase());
+          row.querySelectorAll<HTMLElement>(':scope > th'),
+        ).map((cell) => normalizedHeader(cell.textContent));
 
         return (
-          headers.includes('player') &&
-          headers.some((header) => ['goals', 'goal'].includes(header))
+          headers.some((header) => aliases.player.includes(header)) &&
+          headers.some((header) => aliases.goals.includes(header))
         );
       });
 
@@ -1227,16 +1285,18 @@ async function scrapeTopScorers(
 
       const headers = Array.from(
         headerRow.querySelectorAll<HTMLElement>(':scope > th, :scope > td'),
-      ).map((cell) => normalize(cell.textContent).toLowerCase());
-      const playerIndex = headers.indexOf('player');
+      ).map((cell) => normalizedHeader(cell.textContent));
+      const playerIndex = headers.findIndex((header) =>
+        aliases.player.includes(header),
+      );
       const goalsIndex = headers.findIndex((header) =>
-        ['goals', 'goal'].includes(header),
+        aliases.goals.includes(header),
       );
       const teamIndex = headers.findIndex((header) =>
-        ['team', 'club'].includes(header),
+        aliases.team.includes(header),
       );
       const rankIndex = headers.findIndex((header) =>
-        ['rank', 'pos', 'position', 'no.', 'no'].includes(header),
+        aliases.rank.includes(header),
       );
 
       for (const [rowOffset, row] of rows
@@ -1247,11 +1307,11 @@ async function scrapeTopScorers(
         );
         const playerCell = cells[playerIndex];
         const playerAnchor = playerCell?.querySelector<HTMLAnchorElement>(
-          'a[href*="/wiki/"]:not(.new):not(.image)',
+          'a[href*="/wiki/"]:not(.new):not(.image):not([href*="File:"])',
         );
         const teamCell = teamIndex >= 0 ? cells[teamIndex] : undefined;
         const teamAnchor = teamCell?.querySelector<HTMLAnchorElement>(
-          'a[href*="/wiki/"]:not(.new):not(.image)',
+          'a[href*="/wiki/"]:not(.new):not(.image):not([href*="File:"])',
         );
         const playerName = normalize(
           playerAnchor?.textContent ?? playerCell?.textContent ?? '',
@@ -1843,6 +1903,7 @@ export async function syncTeams(
   league: ScrapedLeague,
   countryId: Types.ObjectId,
   leagueId: Types.ObjectId,
+  syncChildren = true,
 ): Promise<void> {
   syncState.phase = 'teams';
 
@@ -1895,7 +1956,7 @@ export async function syncTeams(
         externalId: team.externalId,
       });
 
-      if (teamDocument) {
+      if (teamDocument && syncChildren) {
         await syncTeamImage(page, team, teamDocument._id);
         await syncStadium(page, team, teamDocument._id, countryId);
         await syncCoach(page, team, teamDocument._id);
@@ -2211,26 +2272,19 @@ export async function syncTopScorer(page: Page): Promise<void> {
 
     try {
       const scorers = await scrapeTopScorers(page, season);
+      let seasonSaved = 0;
+      let seasonPlayersCreated = 0;
+      let seasonPlayersMissing = 0;
+      let seasonTeamsMissing = 0;
 
       for (const scorer of scorers) {
         // externalId menghubungkan hasil Wikipedia dengan dokumen master yang
         // sudah ada tanpa bergantung pada nama yang dapat berubah.
         const playerExternalId = scorer.playerUrl
           ? wikipediaExternalId(scorer.playerUrl, season.sourceUrl)
-          : undefined;
-        const player =
-          (playerExternalId
-            ? playersByExternalId.get(playerExternalId)
-            : undefined) ?? playersByName.get(scorer.playerName.toLowerCase());
-
-        if (!player) {
-          syncState.topScorerPlayersMissing += 1;
-          console.log(
-            `[top-scorer] ${season.name}: player ${scorer.playerName} is not in players`,
-          );
-          continue;
-        }
-
+          : `wikipedia:player:${scorer.playerName
+              .toLowerCase()
+              .replace(/[^a-z0-9]+/g, '-')}`;
         const teamExternalId = scorer.teamUrl
           ? wikipediaExternalId(scorer.teamUrl, season.sourceUrl)
           : undefined;
@@ -2241,6 +2295,60 @@ export async function syncTopScorer(page: Page): Promise<void> {
           (scorer.teamName
             ? teamsByName.get(scorer.teamName.toLowerCase())
             : undefined);
+
+        if (scorer.teamName && !team) {
+          syncState.topScorerTeamsMissing += 1;
+          seasonTeamsMissing += 1;
+          console.log(
+            `[top-scorer] ${season.name}: team ${scorer.teamName} is not in teams`,
+          );
+        }
+
+        let player =
+          playersByExternalId.get(playerExternalId) ??
+          playersByName.get(scorer.playerName.toLowerCase());
+
+        if (!player && team) {
+          const createdPlayer = await PlayerModel.findOneAndUpdate(
+            { externalId: playerExternalId },
+            {
+              $set: {
+                name: scorer.playerName,
+                imageUrl: null,
+                mobileImageUrl: null,
+                team: team._id,
+                sourceUrl: scorer.playerUrl,
+                scrapedAt: new Date(),
+              },
+            },
+            {
+              upsert: true,
+              new: true,
+              setDefaultsOnInsert: true,
+            },
+          );
+
+          if (createdPlayer) {
+            player = createdPlayer;
+            playersByExternalId.set(createdPlayer.externalId, createdPlayer);
+            playersByName.set(createdPlayer.name.toLowerCase(), createdPlayer);
+            syncState.topScorerPlayersCreated += 1;
+            seasonPlayersCreated += 1;
+            console.log(
+              `[top-scorer] ${season.name}: player ${createdPlayer.name} created`,
+            );
+          }
+        }
+
+        if (!player) {
+          syncState.topScorerPlayersMissing += 1;
+          seasonPlayersMissing += 1;
+          console.log(
+            `[top-scorer] ${season.name}: player ${scorer.playerName} skipped because its team is unavailable`,
+          );
+          continue;
+        }
+
         const relation = seasonDocument.league
           ? { league: seasonDocument.league }
           : { cup: seasonDocument.cup };
@@ -2267,9 +2375,10 @@ export async function syncTopScorer(page: Page): Promise<void> {
           { upsert: true },
         );
         syncState.topScorersSaved += 1;
+        seasonSaved += 1;
       }
       console.log(
-        `[top-scorer] ${season.name}: ${scorers.length} rows found`,
+        `[top-scorer] ${season.name}: source=${season.sourceUrl}, found=${scorers.length}, saved=${seasonSaved}, playersCreated=${seasonPlayersCreated}, playersMissing=${seasonPlayersMissing}, teamsMissing=${seasonTeamsMissing}`,
       );
     } catch (error) {
       syncState.topScorerPagesFailed += 1;
@@ -2283,7 +2392,303 @@ export async function syncTopScorer(page: Page): Promise<void> {
   }
 }
 
-async function runWikipediaMasterSync(): Promise<void> {
+async function syncAllTeams(page: Page): Promise<void> {
+  const leagues = await LeagueModel.find({
+    sourceUrl: { $exists: true, $ne: '' },
+  });
+
+  for (const league of leagues) {
+    if (!league.sourceUrl) {
+      continue;
+    }
+
+    const country = await CountryModel.findById(league.country);
+
+    if (!country) {
+      console.log(`[teams] ${league.name}: Country belum tersedia`);
+      continue;
+    }
+
+    await syncTeams(
+      page,
+      {
+        externalId: league.externalId,
+        name: league.name,
+        countryName: country.name,
+        sourceUrl: league.sourceUrl,
+      },
+      country._id,
+      league._id,
+      false,
+    );
+    await new Promise((resolve) => setTimeout(resolve, 300));
+  }
+}
+
+async function findTeamsForSpecifiedSync() {
+  return TeamModel.find({
+    sourceUrl: { $exists: true, $ne: '' },
+  });
+}
+
+async function syncAllPlayers(page: Page): Promise<void> {
+  const teams = await findTeamsForSpecifiedSync();
+
+  if (teams.length === 0) {
+    console.log('[players] Skipped: Team belum tersedia');
+    syncState.skippedSyncs.push({
+      name: 'players',
+      reason: 'Team belum tersedia',
+    });
+    return;
+  }
+
+  for (const team of teams) {
+    if (!team.sourceUrl) {
+      continue;
+    }
+
+    await syncPlayers(
+      page,
+      {
+        externalId: team.externalId,
+        name: team.name,
+        imageUrl: team.imageUrl ?? undefined,
+        mobileImageUrl: team.mobileImageUrl ?? undefined,
+        sourceUrl: team.sourceUrl,
+      },
+      team._id,
+    );
+    await new Promise((resolve) => setTimeout(resolve, 300));
+  }
+}
+
+async function syncAllCoaches(page: Page): Promise<void> {
+  const teams = await findTeamsForSpecifiedSync();
+
+  for (const team of teams) {
+    if (!team.sourceUrl) {
+      continue;
+    }
+
+    await syncCoach(
+      page,
+      {
+        externalId: team.externalId,
+        name: team.name,
+        imageUrl: team.imageUrl ?? undefined,
+        mobileImageUrl: team.mobileImageUrl ?? undefined,
+        sourceUrl: team.sourceUrl,
+      },
+      team._id,
+    );
+    await new Promise((resolve) => setTimeout(resolve, 300));
+  }
+}
+
+async function syncAllStadiums(page: Page): Promise<void> {
+  const teams = await findTeamsForSpecifiedSync();
+
+  for (const team of teams) {
+    if (!team.sourceUrl || !team.country) {
+      continue;
+    }
+
+    await syncStadium(
+      page,
+      {
+        externalId: team.externalId,
+        name: team.name,
+        imageUrl: team.imageUrl ?? undefined,
+        mobileImageUrl: team.mobileImageUrl ?? undefined,
+        sourceUrl: team.sourceUrl,
+      },
+      team._id,
+      team.country,
+    );
+    await new Promise((resolve) => setTimeout(resolve, 300));
+  }
+}
+
+async function syncSpecifiedDocument(
+  page: Page,
+  requestedTarget: string,
+): Promise<void> {
+  const normalizedTarget = requestedTarget.toLowerCase().replace(/[_\s]/g, '-');
+  const target = SYNC_TARGET_ALIASES[normalizedTarget];
+
+  if (!target) {
+    throw new Error(
+      `Unknown sync target "${requestedTarget}". Use years, countries, leagues, cups, teams, players, coaches, stadiums, seasons, classements, top-scorers, or referees.`,
+    );
+  }
+
+  syncState.selectedSync = target;
+  console.log(`[sync-target] Starting only ${target}`);
+
+  switch (target) {
+    case 'years':
+      await syncYears();
+      break;
+    case 'countries':
+      await syncCountries(page);
+      break;
+    case 'leagues':
+      await syncLeagues(page);
+      break;
+    case 'cups':
+      await syncCup(page);
+      break;
+    case 'teams':
+      await syncAllTeams(page);
+      break;
+    case 'players':
+      await syncAllPlayers(page);
+      break;
+    case 'coaches':
+      await syncAllCoaches(page);
+      break;
+    case 'stadiums':
+      await syncAllStadiums(page);
+      break;
+    case 'seasons':
+      await syncSeason(page);
+      break;
+    case 'classements':
+      await syncClassement(page);
+      break;
+    case 'topScorers':
+      await syncTopScorer(page);
+      break;
+    case 'referees':
+      await syncReferee(page);
+      break;
+  }
+}
+
+async function syncBySmallestCollection(page: Page): Promise<void> {
+  const tasks = [
+    {
+      name: 'years',
+      countDocuments: () => YearModel.countDocuments(),
+      getSkipReason: async () => undefined,
+      run: () => syncYears(),
+    },
+    {
+      name: 'countries',
+      countDocuments: () => CountryModel.countDocuments(),
+      getSkipReason: async () => undefined,
+      run: () => syncCountries(page),
+    },
+    {
+      name: 'leagues',
+      countDocuments: () => LeagueModel.countDocuments(),
+      getSkipReason: async () => undefined,
+      run: () => syncLeagues(page),
+    },
+    {
+      name: 'cups',
+      countDocuments: () => CupModel.countDocuments(),
+      getSkipReason: async () => undefined,
+      run: () => syncCup(page),
+    },
+    {
+      name: 'seasons',
+      countDocuments: () => SeasonModel.countDocuments(),
+      getSkipReason: async () =>
+        (await Promise.all([
+          LeagueModel.exists({}),
+          CupModel.exists({}),
+        ])).some(Boolean)
+          ? undefined
+          : 'League dan Cup belum tersedia',
+      run: () => syncSeason(page),
+    },
+    {
+      name: 'classements',
+      countDocuments: () => ClassementModel.countDocuments(),
+      getSkipReason: async () => {
+        const [league, team, year] = await Promise.all([
+          LeagueModel.exists({}),
+          TeamModel.exists({}),
+          YearModel.exists({}),
+        ]);
+
+        return league && team && year
+          ? undefined
+          : 'League, Team, atau Year belum tersedia';
+      },
+      run: () => syncClassement(page),
+    },
+    {
+      name: 'topScorers',
+      countDocuments: () => TopScorerModel.countDocuments(),
+      getSkipReason: async () => {
+        const [season, team] = await Promise.all([
+          SeasonModel.exists({}),
+          TeamModel.exists({}),
+        ]);
+
+        return season && team
+          ? undefined
+          : 'Season atau Team belum tersedia';
+      },
+      run: () => syncTopScorer(page),
+    },
+    {
+      name: 'referees',
+      countDocuments: () => RefereeModel.countDocuments(),
+      getSkipReason: async () =>
+        (await SeasonModel.exists({}))
+          ? undefined
+          : 'Season belum tersedia',
+      run: () => syncReferee(page),
+    },
+  ];
+  const counts = await Promise.all(
+    tasks.map(async (task, originalIndex) => ({
+      task,
+      originalIndex,
+      documentCount: await task.countDocuments(),
+    })),
+  );
+
+  counts.sort(
+    (left, right) =>
+      left.documentCount - right.documentCount ||
+      left.originalIndex - right.originalIndex,
+  );
+  syncState.priorityOrder = counts.map(({ task, documentCount }) => ({
+    name: task.name,
+    documentCount,
+  }));
+
+  console.log(
+    `[sync-priority] ${syncState.priorityOrder
+      .map((item) => `${item.name}=${item.documentCount}`)
+      .join(' -> ')}`,
+  );
+
+  for (const { task, documentCount } of counts) {
+    const skipReason = await task.getSkipReason();
+
+    if (skipReason) {
+      syncState.skippedSyncs.push({
+        name: task.name,
+        reason: skipReason,
+      });
+      console.log(`[sync-priority] Skipped ${task.name}: ${skipReason}`);
+      continue;
+    }
+
+    console.log(
+      `[sync-priority] Starting ${task.name} (${documentCount} documents)`,
+    );
+    await task.run();
+  }
+}
+
+async function runWikipediaMasterSync(syncTarget?: string): Promise<void> {
   const { default: puppeteer } = await import('puppeteer');
   const browser = await puppeteer.launch({
     headless: process.env.PUPPETEER_HEADLESS !== 'false',
@@ -2294,14 +2699,11 @@ async function runWikipediaMasterSync(): Promise<void> {
     const page = await browser.newPage();
     await configurePage(page);
 
-    await syncYears();
-    await syncCountries(page);
-    await syncLeagues(page);
-    await syncCup(page);
-    await syncSeason(page);
-    await syncClassement(page);
-    await syncTopScorer(page);
-    await syncReferee(page);
+    if (syncTarget) {
+      await syncSpecifiedDocument(page, syncTarget);
+    } else {
+      await syncBySmallestCollection(page);
+    }
 
     syncState.status = 'completed';
     syncState.phase = 'completed';
@@ -2319,7 +2721,9 @@ async function runWikipediaMasterSync(): Promise<void> {
   }
 }
 
-export function getOrStartWikipediaMasterSync(): WikipediaSyncState {
+export function getOrStartWikipediaMasterSync(
+  syncTarget?: string,
+): WikipediaSyncState {
   if (!activeSync && syncState.status === 'idle') {
     syncState = {
       ...createIdleState(),
@@ -2327,7 +2731,7 @@ export function getOrStartWikipediaMasterSync(): WikipediaSyncState {
       phase: 'years',
       startedAt: new Date().toISOString(),
     };
-    activeSync = runWikipediaMasterSync().finally(() => {
+    activeSync = runWikipediaMasterSync(syncTarget).finally(() => {
       activeSync = undefined;
     });
   }
