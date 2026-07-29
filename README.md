@@ -191,8 +191,8 @@ referee
 Nama plural juga diterima, misalnya `--sync=players` atau
 `--sync=top-scorers`. Target `team`, `player`, `coach`, dan `stadium` membaca
 relasi yang sudah tersedia di MongoDB lalu hanya menjalankan sinkronisasi
-pilihan tersebut. Jika flag tidak diberikan, seluruh sync tetap dijalankan
-berdasarkan prioritas jumlah dokumen.
+pilihan tersebut. Jika flag tidak diberikan, seluruh sync dijalankan dengan
+urutan tetap.
 
 Server menjalankan proses berikut:
 
@@ -212,35 +212,24 @@ Ketika proses menerima `SIGINT` atau `SIGTERM`, browser aktif juga ditutup.
 ## Flow Sinkronisasi
 
 ```text
-Hitung jumlah dokumen setiap koleksi
-                    ↓
-Urutkan dari jumlah paling sedikit
-                    ↓
-Jalankan setiap sync secara berurutan
+years
+  ↓
+countries → leagues → cups → teams
+                              ↓
+players → coaches → stadiums
+                              ↓
+seasons → classements → topScorers → referees
 ```
 
-Urutan dihitung saat proses dimulai untuk `Year`, `Country`, `League`, `Cup`,
-`Season`, `Classement`, `TopScorer`, dan `Referee`. Contoh log:
+Urutan tidak lagi dihitung dari jumlah dokumen. Service selalu mencetak dan
+menjalankan urutan yang sama:
 
 ```text
-[sync-priority] topScorers=3 -> referees=8 -> cups=25 -> seasons=40
+[sync-order] years -> countries -> leagues -> cups -> teams -> players -> coaches -> stadiums -> seasons -> classements -> topScorers -> referees
 ```
 
-Jika jumlah dua koleksi sama, urutan deklarasi yang menjaga relasi digunakan
-sebagai tie-breaker. `syncTeams`, `syncTeamImage`, `syncStadium`, `syncCoach`,
-dan `syncPlayers` tetap dijalankan sebagai bagian dari `syncLeagues` karena
-fungsi tersebut membutuhkan ID country, league, dan team.
-
-Sebelum task dijalankan, service memeriksa dokumen relasi yang dibutuhkan. Task
-yang dependency-nya belum tersedia dilewati tanpa menggagalkan pipeline:
-
-```text
-[sync-priority] Skipped topScorers: Season atau Team belum tersedia
-```
-
-Jalankan aplikasi kembali untuk menghitung urutan baru dan memproses task yang
-sebelumnya dilewati. Urutan terpilih tersedia pada `syncState.priorityOrder`,
-sedangkan task yang dilewati tersedia pada `syncState.skippedSyncs`.
+`syncLeagues()` hanya menyimpan league pada pipeline penuh. Team, player,
+coach, dan stadium dipanggil pada tahap terpisah agar tidak diproses dua kali.
 
 ### 1. Tahun
 

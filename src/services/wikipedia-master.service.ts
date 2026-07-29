@@ -173,7 +173,6 @@ export interface WikipediaSyncState {
   classementsSaved: number;
   classementPagesFailed: number;
   classementTeamsMissing: number;
-  priorityOrder: Array<{ name: string; documentCount: number }>;
   skippedSyncs: Array<{ name: string; reason: string }>;
   selectedSync?: string;
   startedAt?: string;
@@ -248,7 +247,6 @@ function createIdleState(): WikipediaSyncState {
     classementsSaved: 0,
     classementPagesFailed: 0,
     classementTeamsMissing: 0,
-    priorityOrder: [],
     skippedSyncs: [],
   };
 }
@@ -1976,7 +1974,10 @@ export async function syncTeams(
  * Menyimpan league berdasarkan externalId Wikipedia. Country dicari lebih
  * dahulu, kemudian country._id disimpan sebagai relasi pada League.
  */
-export async function syncLeagues(page: Page): Promise<void> {
+export async function syncLeagues(
+  page: Page,
+  syncChildren = true,
+): Promise<void> {
   syncState.phase = 'leagues';
   const leagues = await scrapeTopLeagues(page);
   syncState.leaguesDiscovered = leagues.length;
@@ -2028,7 +2029,9 @@ export async function syncLeagues(page: Page): Promise<void> {
     );
     syncState.leaguesSaved += 1;
 
-    await syncTeams(page, league, country._id, leagueDocument._id);
+    if (syncChildren) {
+      await syncTeams(page, league, country._id, leagueDocument._id);
+    }
     await new Promise((resolve) => setTimeout(resolve, 300));
   }
 }
@@ -2566,126 +2569,36 @@ async function syncSpecifiedDocument(
   }
 }
 
-async function syncBySmallestCollection(page: Page): Promise<void> {
-  const tasks = [
-    {
-      name: 'years',
-      countDocuments: () => YearModel.countDocuments(),
-      getSkipReason: async () => undefined,
-      run: () => syncYears(),
-    },
-    {
-      name: 'countries',
-      countDocuments: () => CountryModel.countDocuments(),
-      getSkipReason: async () => undefined,
-      run: () => syncCountries(page),
-    },
-    {
-      name: 'leagues',
-      countDocuments: () => LeagueModel.countDocuments(),
-      getSkipReason: async () => undefined,
-      run: () => syncLeagues(page),
-    },
-    {
-      name: 'cups',
-      countDocuments: () => CupModel.countDocuments(),
-      getSkipReason: async () => undefined,
-      run: () => syncCup(page),
-    },
-    {
-      name: 'seasons',
-      countDocuments: () => SeasonModel.countDocuments(),
-      getSkipReason: async () =>
-        (await Promise.all([
-          LeagueModel.exists({}),
-          CupModel.exists({}),
-        ])).some(Boolean)
-          ? undefined
-          : 'League dan Cup belum tersedia',
-      run: () => syncSeason(page),
-    },
-    {
-      name: 'classements',
-      countDocuments: () => ClassementModel.countDocuments(),
-      getSkipReason: async () => {
-        const [league, team, year] = await Promise.all([
-          LeagueModel.exists({}),
-          TeamModel.exists({}),
-          YearModel.exists({}),
-        ]);
-
-        return league && team && year
-          ? undefined
-          : 'League, Team, atau Year belum tersedia';
-      },
-      run: () => syncClassement(page),
-    },
-    {
-      name: 'topScorers',
-      countDocuments: () => TopScorerModel.countDocuments(),
-      getSkipReason: async () => {
-        const [season, team] = await Promise.all([
-          SeasonModel.exists({}),
-          TeamModel.exists({}),
-        ]);
-
-        return season && team
-          ? undefined
-          : 'Season atau Team belum tersedia';
-      },
-      run: () => syncTopScorer(page),
-    },
-    {
-      name: 'referees',
-      countDocuments: () => RefereeModel.countDocuments(),
-      getSkipReason: async () =>
-        (await SeasonModel.exists({}))
-          ? undefined
-          : 'Season belum tersedia',
-      run: () => syncReferee(page),
-    },
+async function syncInFixedOrder(page: Page): Promise<void> {
+  const steps = [
+    'years',
+    'countries',
+    'leagues',
+    'cups',
+    'teams',
+    'players',
+    'coaches',
+    'stadiums',
+    'seasons',
+    'classements',
+    'topScorers',
+    'referees',
   ];
-  const counts = await Promise.all(
-    tasks.map(async (task, originalIndex) => ({
-      task,
-      originalIndex,
-      documentCount: await task.countDocuments(),
-    })),
-  );
 
-  counts.sort(
-    (left, right) =>
-      left.documentCount - right.documentCount ||
-      left.originalIndex - right.originalIndex,
-  );
-  syncState.priorityOrder = counts.map(({ task, documentCount }) => ({
-    name: task.name,
-    documentCount,
-  }));
+  console.log(`[sync-order] ${steps.join(' -> ')}`);
 
-  console.log(
-    `[sync-priority] ${syncState.priorityOrder
-      .map((item) => `${item.name}=${item.documentCount}`)
-      .join(' -> ')}`,
-  );
-
-  for (const { task, documentCount } of counts) {
-    const skipReason = await task.getSkipReason();
-
-    if (skipReason) {
-      syncState.skippedSyncs.push({
-        name: task.name,
-        reason: skipReason,
-      });
-      console.log(`[sync-priority] Skipped ${task.name}: ${skipReason}`);
-      continue;
-    }
-
-    console.log(
-      `[sync-priority] Starting ${task.name} (${documentCount} documents)`,
-    );
-    await task.run();
-  }
+  await syncYears();
+  await syncCountries(page);
+  await syncLeagues(page, false);
+  await syncCup(page);
+  await syncAllTeams(page);
+  await syncAllPlayers(page);
+  await syncAllCoaches(page);
+  await syncAllStadiums(page);
+  await syncSeason(page);
+  await syncClassement(page);
+  await syncTopScorer(page);
+  await syncReferee(page);
 }
 
 async function runWikipediaMasterSync(syncTarget?: string): Promise<void> {
@@ -2702,7 +2615,7 @@ async function runWikipediaMasterSync(syncTarget?: string): Promise<void> {
     if (syncTarget) {
       await syncSpecifiedDocument(page, syncTarget);
     } else {
-      await syncBySmallestCollection(page);
+      await syncInFixedOrder(page);
     }
 
     syncState.status = 'completed';
