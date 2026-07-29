@@ -194,6 +194,36 @@ relasi yang sudah tersedia di MongoDB lalu hanya menjalankan sinkronisasi
 pilihan tersebut. Jika flag tidak diberikan, seluruh sync dijalankan dengan
 urutan tetap.
 
+### Checkpoint dan Restart
+
+Sebelum setiap row diproses, service menulis `.sync-checkpoint.json`:
+
+```json
+{
+  "collection": "players",
+  "row": 125
+}
+```
+
+Jika proses dihentikan, run berikutnya melanjutkan collection dan row tersebut.
+Row aktif diproses ulang agar data yang belum selesai tidak terlewat. Upsert
+mencegah dokumen duplikat.
+
+Mulai kembali dari awal:
+
+```bash
+npm run dev -- --restart
+```
+
+Restart satu target:
+
+```bash
+npm run dev -- --restart --player
+```
+
+Checkpoint otomatis dihapus setelah seluruh proses berhasil selesai dan tidak
+disimpan ke Git.
+
 Server menjalankan proses berikut:
 
 ```text

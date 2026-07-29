@@ -15,6 +15,12 @@ import { StadiumModel } from '../models/stadium';
 import { TeamModel } from '../models/team';
 import { TopScorerModel } from '../models/top-scorer';
 import { YearModel } from '../models/year';
+import {
+  clearSyncCheckpoint,
+  readSyncCheckpoint,
+  type SyncCheckpoint,
+  writeSyncCheckpoint,
+} from '../utils/sync-checkpoint';
 
 const COUNTRY_LIST_URL =
   'https://en.wikipedia.org/wiki/List_of_sovereign_states';
@@ -213,6 +219,34 @@ const activeBrowsers = new Set<Browser>();
 let isShuttingDown = false;
 let activeSync: Promise<void> | undefined;
 let syncState: WikipediaSyncState = createIdleState();
+let resumeCheckpoint: SyncCheckpoint | undefined;
+
+async function processCheckpointRows<T>(
+  collection: string,
+  rows: T[],
+  processRow: (row: T, index: number) => Promise<void>,
+): Promise<void> {
+  const startRow =
+    resumeCheckpoint?.collection === collection
+      ? Math.min(resumeCheckpoint.row, rows.length)
+      : 0;
+
+  if (startRow > 0) {
+    console.log(`[checkpoint] Continue ${collection} from row ${startRow}`);
+  }
+
+  for (let index = startRow; index < rows.length; index += 1) {
+    await writeSyncCheckpoint({
+      collection,
+      row: index,
+    });
+    await processRow(rows[index], index);
+  }
+
+  if (resumeCheckpoint?.collection === collection) {
+    resumeCheckpoint = undefined;
+  }
+}
 
 function createIdleState(): WikipediaSyncState {
   return {
@@ -1528,23 +1562,19 @@ export async function syncYears(): Promise<void> {
   syncState.phase = 'years';
   const years = Array.from({ length: 27 }, (_, index) => 2000 + index);
 
-  await YearModel.bulkWrite(
-    years.map((year) => ({
-      updateOne: {
-        filter: {
+  await processCheckpointRows('years', years, async (year) => {
+    await YearModel.updateOne(
+      { year },
+      {
+        $set: {
+          externalId: `year:${year}`,
+          name: String(year),
           year,
         },
-        update: {
-          $set: {
-            externalId: `year:${year}`,
-            name: String(year),
-            year,
-          },
-        },
-        upsert: true,
       },
-    })),
-  );
+      { upsert: true },
+    );
+  });
   syncState.yearsSaved = years.length;
 }
 
@@ -1559,7 +1589,7 @@ export async function syncClassement(page: Page): Promise<void> {
       $exists: true,
       $ne: null,
     },
-  });
+  }).sort({ _id: 1 });
   const teams = await TeamModel.find({}, { externalId: 1, name: 1 });
   const teamsByExternalId = new Map(
     teams.map((team) => [team.externalId, team]),
@@ -1568,9 +1598,9 @@ export async function syncClassement(page: Page): Promise<void> {
     teams.map((team) => [team.name.toLowerCase(), team]),
   );
 
-  for (const league of leagues) {
+  await processCheckpointRows('classements', leagues, async (league) => {
     if (!league.sourceUrl) {
-      continue;
+      return;
     }
 
     try {
@@ -1659,7 +1689,7 @@ export async function syncClassement(page: Page): Promise<void> {
     }
 
     await new Promise((resolve) => setTimeout(resolve, 300));
-  }
+  });
 }
 
 /**
@@ -1670,7 +1700,7 @@ export async function syncCountries(page: Page): Promise<void> {
   syncState.phase = 'countries';
   const countries = await scrapeCountries(page);
 
-  for (const country of countries) {
+  await processCheckpointRows('countries', countries, async (country) => {
     await CountryModel.updateOne(
       {
         externalId: country.externalId,
@@ -1689,7 +1719,7 @@ export async function syncCountries(page: Page): Promise<void> {
       },
     );
     syncState.countriesSaved += 1;
-  }
+  });
 }
 
 /**
@@ -1982,7 +2012,7 @@ export async function syncLeagues(
   const leagues = await scrapeTopLeagues(page);
   syncState.leaguesDiscovered = leagues.length;
 
-  for (const league of leagues) {
+  await processCheckpointRows('leagues', leagues, async (league) => {
     const countryExternalId = `wikipedia:${league.countryName.replace(
       /\s+/g,
       '_',
@@ -2033,7 +2063,7 @@ export async function syncLeagues(
       await syncTeams(page, league, country._id, leagueDocument._id);
     }
     await new Promise((resolve) => setTimeout(resolve, 300));
-  }
+  });
 }
 
 /**
@@ -2047,7 +2077,7 @@ export async function syncCup(page: Page): Promise<void> {
     const cups = await scrapeCups(page);
     syncState.cupsDiscovered = cups.length;
 
-    for (const cup of cups) {
+    await processCheckpointRows('cups', cups, async (cup) => {
       try {
         const countryExternalId = `wikipedia:${cup.countryName.replace(
           /\s+/g,
@@ -2101,7 +2131,7 @@ export async function syncCup(page: Page): Promise<void> {
           error instanceof Error ? error.message : error,
         );
       }
-    }
+    });
 
     console.log(`[cup] ${syncState.cupsSaved} cups saved`);
   } catch (error) {
@@ -2121,18 +2151,20 @@ export async function syncSeason(page: Page): Promise<void> {
   syncState.phase = 'seasons';
   const leagues = await LeagueModel.find({
     sourceUrl: { $exists: true, $ne: '' },
-  });
+  }).sort({ _id: 1 });
   const cups = await CupModel.find({
     sourceUrl: { $exists: true, $ne: '' },
-  });
+  }).sort({ _id: 1 });
 
-  for (const competition of [
+  const competitions = [
     ...leagues.map((league) => ({
       kind: 'league' as const,
       document: league,
     })),
     ...cups.map((cup) => ({ kind: 'cup' as const, document: cup })),
-  ]) {
+  ];
+
+  await processCheckpointRows('seasons', competitions, async (competition) => {
     try {
       const sourceUrl = competition.document.sourceUrl;
 
@@ -2184,7 +2216,7 @@ export async function syncSeason(page: Page): Promise<void> {
     }
 
     await new Promise((resolve) => setTimeout(resolve, 300));
-  }
+  });
 }
 
 /**
@@ -2193,9 +2225,12 @@ export async function syncSeason(page: Page): Promise<void> {
  */
 export async function syncReferee(page: Page): Promise<void> {
   syncState.phase = 'referees';
-  const seasons = await SeasonModel.find();
+  const seasons = await SeasonModel.find().sort({ _id: 1 });
 
-  for (const seasonDocument of seasons) {
+  await processCheckpointRows(
+    'referees',
+    seasons,
+    async (seasonDocument) => {
     const season: ScrapedSeason = {
       externalId: seasonDocument.externalId,
       name: seasonDocument.name,
@@ -2239,7 +2274,8 @@ export async function syncReferee(page: Page): Promise<void> {
     }
 
     await new Promise((resolve) => setTimeout(resolve, 300));
-  }
+    },
+  );
 }
 
 /**
@@ -2248,7 +2284,7 @@ export async function syncReferee(page: Page): Promise<void> {
  */
 export async function syncTopScorer(page: Page): Promise<void> {
   syncState.phase = 'topScorers';
-  const seasons = await SeasonModel.find();
+  const seasons = await SeasonModel.find().sort({ _id: 1 });
   const players = await PlayerModel.find();
   const teams = await TeamModel.find();
   const playersByExternalId = new Map(
@@ -2264,7 +2300,10 @@ export async function syncTopScorer(page: Page): Promise<void> {
     teams.map((team) => [team.name.toLowerCase(), team]),
   );
 
-  for (const seasonDocument of seasons) {
+  await processCheckpointRows(
+    'topScorers',
+    seasons,
+    async (seasonDocument) => {
     const season: ScrapedSeason = {
       externalId: seasonDocument.externalId,
       name: seasonDocument.name,
@@ -2392,24 +2431,25 @@ export async function syncTopScorer(page: Page): Promise<void> {
     }
 
     await new Promise((resolve) => setTimeout(resolve, 300));
-  }
+    },
+  );
 }
 
 async function syncAllTeams(page: Page): Promise<void> {
   const leagues = await LeagueModel.find({
     sourceUrl: { $exists: true, $ne: '' },
-  });
+  }).sort({ _id: 1 });
 
-  for (const league of leagues) {
+  await processCheckpointRows('teams', leagues, async (league) => {
     if (!league.sourceUrl) {
-      continue;
+      return;
     }
 
     const country = await CountryModel.findById(league.country);
 
     if (!country) {
       console.log(`[teams] ${league.name}: Country belum tersedia`);
-      continue;
+      return;
     }
 
     await syncTeams(
@@ -2425,13 +2465,13 @@ async function syncAllTeams(page: Page): Promise<void> {
       false,
     );
     await new Promise((resolve) => setTimeout(resolve, 300));
-  }
+  });
 }
 
 async function findTeamsForSpecifiedSync() {
   return TeamModel.find({
     sourceUrl: { $exists: true, $ne: '' },
-  });
+  }).sort({ _id: 1 });
 }
 
 async function syncAllPlayers(page: Page): Promise<void> {
@@ -2446,9 +2486,9 @@ async function syncAllPlayers(page: Page): Promise<void> {
     return;
   }
 
-  for (const team of teams) {
+  await processCheckpointRows('players', teams, async (team) => {
     if (!team.sourceUrl) {
-      continue;
+      return;
     }
 
     await syncPlayers(
@@ -2463,15 +2503,15 @@ async function syncAllPlayers(page: Page): Promise<void> {
       team._id,
     );
     await new Promise((resolve) => setTimeout(resolve, 300));
-  }
+  });
 }
 
 async function syncAllCoaches(page: Page): Promise<void> {
   const teams = await findTeamsForSpecifiedSync();
 
-  for (const team of teams) {
+  await processCheckpointRows('coaches', teams, async (team) => {
     if (!team.sourceUrl) {
-      continue;
+      return;
     }
 
     await syncCoach(
@@ -2486,15 +2526,15 @@ async function syncAllCoaches(page: Page): Promise<void> {
       team._id,
     );
     await new Promise((resolve) => setTimeout(resolve, 300));
-  }
+  });
 }
 
 async function syncAllStadiums(page: Page): Promise<void> {
   const teams = await findTeamsForSpecifiedSync();
 
-  for (const team of teams) {
+  await processCheckpointRows('stadiums', teams, async (team) => {
     if (!team.sourceUrl || !team.country) {
-      continue;
+      return;
     }
 
     await syncStadium(
@@ -2510,7 +2550,7 @@ async function syncAllStadiums(page: Page): Promise<void> {
       team.country,
     );
     await new Promise((resolve) => setTimeout(resolve, 300));
-  }
+  });
 }
 
 async function syncSpecifiedDocument(
@@ -2537,7 +2577,7 @@ async function syncSpecifiedDocument(
       await syncCountries(page);
       break;
     case 'leagues':
-      await syncLeagues(page);
+      await syncLeagues(page, false);
       break;
     case 'cups':
       await syncCup(page);
@@ -2571,34 +2611,38 @@ async function syncSpecifiedDocument(
 
 async function syncInFixedOrder(page: Page): Promise<void> {
   const steps = [
-    'years',
-    'countries',
-    'leagues',
-    'cups',
-    'teams',
-    'players',
-    'coaches',
-    'stadiums',
-    'seasons',
-    'classements',
-    'topScorers',
-    'referees',
+    { name: 'years', run: () => syncYears() },
+    { name: 'countries', run: () => syncCountries(page) },
+    { name: 'leagues', run: () => syncLeagues(page, false) },
+    { name: 'cups', run: () => syncCup(page) },
+    { name: 'teams', run: () => syncAllTeams(page) },
+    { name: 'players', run: () => syncAllPlayers(page) },
+    { name: 'coaches', run: () => syncAllCoaches(page) },
+    { name: 'stadiums', run: () => syncAllStadiums(page) },
+    { name: 'seasons', run: () => syncSeason(page) },
+    { name: 'classements', run: () => syncClassement(page) },
+    { name: 'topScorers', run: () => syncTopScorer(page) },
+    { name: 'referees', run: () => syncReferee(page) },
   ];
+  const checkpointIndex = resumeCheckpoint
+    ? steps.findIndex((step) => step.name === resumeCheckpoint?.collection)
+    : -1;
+  const startIndex = checkpointIndex >= 0 ? checkpointIndex : 0;
 
-  console.log(`[sync-order] ${steps.join(' -> ')}`);
+  console.log(`[sync-order] ${steps.map((step) => step.name).join(' -> ')}`);
 
-  await syncYears();
-  await syncCountries(page);
-  await syncLeagues(page, false);
-  await syncCup(page);
-  await syncAllTeams(page);
-  await syncAllPlayers(page);
-  await syncAllCoaches(page);
-  await syncAllStadiums(page);
-  await syncSeason(page);
-  await syncClassement(page);
-  await syncTopScorer(page);
-  await syncReferee(page);
+  for (let index = startIndex; index < steps.length; index += 1) {
+    const step = steps[index];
+    await step.run();
+
+    const nextStep = steps[index + 1];
+    if (nextStep) {
+      await writeSyncCheckpoint({
+        collection: nextStep.name,
+        row: 0,
+      });
+    }
+  }
 }
 
 async function runWikipediaMasterSync(syncTarget?: string): Promise<void> {
@@ -2609,15 +2653,33 @@ async function runWikipediaMasterSync(syncTarget?: string): Promise<void> {
   activeBrowsers.add(browser);
 
   try {
+    resumeCheckpoint = await readSyncCheckpoint();
+    if (resumeCheckpoint) {
+      console.log(
+        `[checkpoint] Continue ${resumeCheckpoint.collection} from row ${resumeCheckpoint.row}`,
+      );
+    }
+
     const page = await browser.newPage();
     await configurePage(page);
 
     if (syncTarget) {
-      await syncSpecifiedDocument(page, syncTarget);
+      const effectiveTarget = resumeCheckpoint?.collection ?? syncTarget;
+
+      if (effectiveTarget !== syncTarget) {
+        console.log(
+          `[checkpoint] Target ${syncTarget} deferred; resuming ${effectiveTarget}`,
+        );
+      }
+
+      await syncSpecifiedDocument(page, effectiveTarget);
     } else {
       await syncInFixedOrder(page);
     }
 
+    await clearSyncCheckpoint();
+    resumeCheckpoint = undefined;
+    console.log('[checkpoint] Master sync completed; checkpoint cleared');
     syncState.status = 'completed';
     syncState.phase = 'completed';
     syncState.finishedAt = new Date().toISOString();

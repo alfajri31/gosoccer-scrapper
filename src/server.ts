@@ -3,6 +3,7 @@ import 'dotenv/config';
 import app from './app';
 import { connectDatabase } from './db/db';
 import { getOrStartWikipediaMasterSync } from './services/wikipedia-master.service';
+import { clearSyncCheckpoint } from './utils/sync-checkpoint';
 
 const port = Number(process.env.PORT) || 3000;
 
@@ -30,13 +31,19 @@ function readSyncTarget(): string | undefined {
     (argument) =>
       argument.startsWith('--') &&
       argument !== '--' &&
-      argument !== '--sync',
+      argument !== '--sync' &&
+      argument !== '--restart',
   );
 
   return shorthand?.slice(2);
 }
 
 async function startServer(): Promise<void> {
+  if (process.argv.includes('--restart')) {
+    await clearSyncCheckpoint();
+    console.log('[checkpoint] Restart requested; checkpoint cleared');
+  }
+
   await connectDatabase();
   getOrStartWikipediaMasterSync(readSyncTarget());
 
